@@ -1,0 +1,38 @@
+# Dependencies
+/vendor/
+/node_modules/
+
+# Secrets & env
+.env
+.env.local
+.env.*.local
+
+# Runtime / sessions (por usuário — não versionar)
+/storage/logs/*
+!/storage/logs/.gitkeep
+/storage/bacbo-evo/*
+!/storage/bacbo-evo/.gitkeep
+/storage/telegram-pending/*
+!/storage/telegram-pending/.gitkeep
+/storage/bot-worker.pid
+/storage/*.pid
+
+# Public generated
+/public/qrcodes/*
+!/public/qrcodes/.gitkeep
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs & caches
+*.log
+npm-debug.log*
+.cache/
+
+# Local tooling
+.grok-changes

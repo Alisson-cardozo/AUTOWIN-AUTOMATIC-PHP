@@ -1,0 +1,25 @@
+{
+  "name": "autowin-php",
+  "version": "1.0.0",
+  "description": "Port completo do sistema AutoWin (Next.js/Node) para **PHP 8.2+** e **MySQL**.",
+  "main": "index.js",
+  "scripts": {
+    "build:portal": "node scripts/build-portal.mjs",
+    "build": "node scripts/build-portal.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.28.1"
+  },
+  "dependencies": {
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "telegram": "^2.26.22",
+    "ws": "^8.21.0"
+  }
+}

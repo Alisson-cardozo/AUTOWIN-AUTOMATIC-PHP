@@ -1,0 +1,232 @@
+/* Port de app/globals.css (efeitos visuais custom do AutoWin, sem as
+   diretivas Tailwind v4 — aqui o Tailwind é carregado via CDN em cada view
+   que precisar). Mantido em arquivo separado pra ser reutilizado por
+   landing page, /entrar, /primeiro-acesso etc. */
+
+body {
+  background: #000000;
+  color: #ffffff;
+}
+
+/* ── AUTOWIN Neon Effects ── */
+
+.aw-glow-green {
+  text-shadow:
+    0 0 7px #39FF14,
+    0 0 10px #39FF14,
+    0 0 21px #39FF14,
+    0 0 42px #39FF14;
+}
+
+.aw-glow-yellow {
+  text-shadow:
+    0 0 7px #FFE600,
+    0 0 10px #FFE600,
+    0 0 21px #FFE600;
+}
+
+.aw-box-green {
+  box-shadow:
+    0 0 5px #39FF14,
+    0 0 10px #39FF14,
+    0 0 20px rgba(57,255,20,0.4);
+}
+
+.aw-box-yellow {
+  box-shadow:
+    0 0 5px #FFE600,
+    0 0 10px #FFE600,
+    0 0 20px rgba(255,230,0,0.4);
+}
+
+.aw-border-green {
+  border-color: #39FF14;
+  box-shadow: 0 0 8px rgba(57,255,20,0.5), inset 0 0 8px rgba(57,255,20,0.05);
+}
+
+.aw-border-yellow {
+  border-color: #FFE600;
+  box-shadow: 0 0 8px rgba(255,230,0,0.4), inset 0 0 8px rgba(255,230,0,0.05);
+}
+
+@keyframes aw-pulse-green {
+  0%, 100% {
+    text-shadow:
+      0 0 7px #39FF14,
+      0 0 10px #39FF14,
+      0 0 21px #39FF14;
+  }
+  50% {
+    text-shadow:
+      0 0 4px #39FF14,
+      0 0 7px #39FF14,
+      0 0 13px #39FF14,
+      0 0 40px rgba(57,255,20,0.8),
+      0 0 80px rgba(57,255,20,0.4);
+  }
+}
+
+@keyframes aw-border-pulse {
+  0%, 100% {
+    box-shadow: 0 0 5px #39FF14, 0 0 10px #39FF14, 0 0 20px rgba(57,255,20,0.3);
+  }
+  50% {
+    box-shadow: 0 0 10px #39FF14, 0 0 20px #39FF14, 0 0 40px rgba(57,255,20,0.6);
+  }
+}
+
+@keyframes aw-scanline {
+  0% { background-position: 0 0; }
+  100% { background-position: 0 100px; }
+}
+
+.aw-logo-text {
+  animation: aw-pulse-green 3s ease-in-out infinite;
+  color: #39FF14;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+}
+
+.aw-sidebar-header {
+  background: linear-gradient(135deg, #001a00 0%, #000000 60%, #1a1500 100%);
+  animation: aw-border-pulse 3s ease-in-out infinite;
+  border-bottom: 1px solid #39FF14 !important;
+}
+
+@keyframes aw-gradient-shift {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.aw-download-btn {
+  background: linear-gradient(90deg, #22c55e, #10b981, #4ade80, #22c55e);
+  background-size: 300% 100%;
+  animation: aw-border-pulse 2s ease-in-out infinite, aw-gradient-shift 3s ease infinite;
+}
+
+.aw-btn-green {
+  background: linear-gradient(135deg, #1a7a08, #39FF14);
+  color: #000000;
+  font-weight: 700;
+  transition: all 0.2s ease;
+}
+
+.aw-btn-green:hover {
+  background: linear-gradient(135deg, #39FF14, #7FFF00);
+  box-shadow: 0 0 15px rgba(57,255,20,0.7);
+}
+
+.aw-btn-green:disabled {
+  opacity: 0.4;
+}
+
+.aw-nav-active {
+  background: rgba(57,255,20,0.08);
+  border: 1px solid rgba(57,255,20,0.35);
+  color: #39FF14;
+  text-shadow: 0 0 8px rgba(57,255,20,0.6);
+}
+
+.aw-card {
+  background: #0a0a0a;
+  border: 1px solid #1a1a1a;
+  transition: border-color 0.2s;
+}
+
+.aw-card:hover {
+  border-color: rgba(57,255,20,0.2);
+}
+
+.aw-yellow {
+  color: #FFE600;
+}
+
+.aw-login-bg {
+  background: radial-gradient(ellipse at center, #001400 0%, #000000 70%);
+  position: relative;
+  overflow: hidden;
+}
+
+.aw-login-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(57,255,20,0.015) 2px,
+      rgba(57,255,20,0.015) 4px
+    );
+  pointer-events: none;
+}
+
+.aw-login-card {
+  background: rgba(0,0,0,0.9);
+  border: 1px solid rgba(57,255,20,0.3);
+  box-shadow:
+    0 0 30px rgba(57,255,20,0.1),
+    0 0 60px rgba(57,255,20,0.05),
+    inset 0 0 30px rgba(57,255,20,0.02);
+}
+
+.aw-input {
+  background: rgba(57,255,20,0.03);
+  border: 1px solid rgba(57,255,20,0.2);
+  color: #ffffff;
+  transition: all 0.2s;
+}
+
+.aw-input:focus {
+  outline: none;
+  border-color: #39FF14;
+  box-shadow: 0 0 0 2px rgba(57,255,20,0.15), 0 0 10px rgba(57,255,20,0.2);
+}
+
+.aw-input::placeholder {
+  color: rgba(255,255,255,0.2);
+}
+
+.aw-sidebar {
+  background: #050505;
+  border-right: 1px solid rgba(57,255,20,0.2);
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+@keyframes aw-float-front {
+  0%, 100% {
+    transform: translateY(0) rotate(6deg) translateX(8px);
+  }
+  50% {
+    transform: translateY(-12px) rotate(4deg) translateX(10px);
+  }
+}
+
+@keyframes aw-float-back {
+  0%, 100% {
+    transform: translateY(0) rotate(-12deg) translateX(-16px);
+  }
+  50% {
+    transform: translateY(-8px) rotate(-10deg) translateX(-18px);
+  }
+}
+
+.aw-animate-float-front {
+  animation: aw-float-front 6s ease-in-out infinite;
+}
+
+.aw-animate-float-back {
+  animation: aw-float-back 6s ease-in-out infinite;
+}

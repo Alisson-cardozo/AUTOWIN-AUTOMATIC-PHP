@@ -1,0 +1,219 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Controllers\Api;
+
+use App\Auth\Auth;
+use App\Database;
+use App\Models\UserRepository;
+
+final class AuthController
+{
+    public function login(): void
+    {
+        $email = trim((string) input('email', ''));
+        $password = (string) input('password', '');
+        if ($email === '' || $password === '') {
+            json_response(['error' => 'Preencha todos os campos.'], 400);
+        }
+
+        // Admin
+        $admin = Database::fetch('SELECT * FROM admin_users WHERE email = ? LIMIT 1', [$email]);
+        if ($admin) {
+            if (!password_verify($password, $admin['password'])) {
+                json_response(['error' => 'Email ou senha incorretos.'], 401);
+            }
+            Auth::loginAdmin((int) $admin['id']);
+
+            $adminAccount = UserRepository::findAdminAccount();
+            if (!$adminAccount) {
+                $id = UserRepository::create([
+                    'name' => $admin['username'] ?: 'Admin',
+                    'email' => $admin['email'],
+                    'isAdminAccount' => 1,
+                    'webPassword' => $admin['password'],
+                    'paymentStatus' => 'PAID',
+                    'createdAt' => now(),
+                ]);
+                $adminAccount = UserRepository::find($id);
+            }
+            if ($adminAccount) {
+                Auth::loginUser((int) $adminAccount['id']);
+            }
+            json_response(['success' => true, 'isAdmin' => true]);
+        }
+
+        // Usuário
+        $user = UserRepository::findByEmail($email);
+        if (!$user || empty($user['webPassword'])) {
+            json_response(['error' => 'Usuário não encontrado ou sem acesso ao painel.'], 401);
+        }
+        if (!password_verify($password, $user['webPassword'])) {
+            json_response(['error' => 'Email ou senha incorretos.'], 401);
+        }
+        Auth::loginUser((int) $user['id']);
+        // Conta isAdminAccount → já libera cookie admin (botão Painel Admin)
+        $elevated = !empty($user['isAdminAccount']) && Auth::ensureAdminSession();
+        json_response(['success' => true, 'isAdmin' => $elevated]);
+    }
+
+    public function logout(): void
+    {
+        Auth::logoutUser();
+        Auth::logoutAdmin();
+        json_response(['success' => true]);
+    }
+
+    public function me(): void
+    {
+        $user = Auth::requireUser();
+        $hiddenTabs = \App\Models\ConfigRepository::get('HIDDEN_TABS', '') ?? '';
+        $hiddenGames = \App\Models\ConfigRepository::get('HIDDEN_GAMES', '') ?? '';
+        $hiddenStrategies = \App\Models\ConfigRepository::get('HIDDEN_STRATEGY_TYPES', '') ?? '';
+
+        // Se o jogo ativo do usuário foi ocultado pelo admin, troca pra um permitido
+        $hiddenGameList = array_values(array_filter(array_map('trim', explode(',', (string) $hiddenGames))));
+        $gameType = (string) ($user['gameType'] ?? 'DOUBLE');
+        $jonbetGameType = (string) ($user['jonbetGameType'] ?? 'DOUBLE');
+        $fallbackGames = ['DOUBLE', 'CRASH', 'FORTUNE', 'BACBO'];
+        if ($gameType !== '' && in_array($gameType, $hiddenGameList, true)) {
+            $next = 'DOUBLE';
+            foreach ($fallbackGames as $g) {
+                if (!in_array($g, $hiddenGameList, true)) {
+                    $next = $g;
+                    break;
+                }
+            }
+            if ($next !== $gameType) {
+                \App\Models\UserRepository::update((int) $user['id'], ['gameType' => $next]);
+                $gameType = $next;
+                $user['gameType'] = $next;
+            }
+        }
+        if ($jonbetGameType !== '' && in_array($jonbetGameType, $hiddenGameList, true)) {
+            $next = 'DOUBLE';
+            foreach (['DOUBLE', 'CRASH', 'FORTUNE'] as $g) {
+                if (!in_array($g, $hiddenGameList, true)) {
+                    $next = $g;
+                    break;
+                }
+            }
+            if ($next !== $jonbetGameType) {
+                \App\Models\UserRepository::update((int) $user['id'], ['jonbetGameType' => $next]);
+                $jonbetGameType = $next;
+                $user['jonbetGameType'] = $next;
+            }
+        }
+
+        $normalizeSettings = static function (?array $s): ?array {
+            if (!$s) {
+                return null;
+            }
+            foreach (['whiteEntryGaleEnabled', 'skipFirstEntry', 'skipEntryAfterLoss'] as $b) {
+                if (array_key_exists($b, $s)) {
+                    $s[$b] = (bool) (int) $s[$b];
+                }
+            }
+            foreach ([
+                'enterValue', 'enterPercent', 'protectionValue', 'martingale', 'martingaleMultiplier',
+                'whiteMultiplier', 'whiteEntryGale', 'whiteEntryGaleMultiplier', 'whiteEntryValue',
+                'whiteEntryPercent', 'quantityCycles',
+            ] as $n) {
+                if (array_key_exists($n, $s) && $s[$n] !== null) {
+                    $s[$n] = (float) $s[$n];
+                }
+            }
+            return $s;
+        };
+        $normalizeVars = static function (?array $v): ?array {
+            if (!$v) {
+                return null;
+            }
+            foreach (['balance', 'profit', 'firstBalance', 'monthStartBalance'] as $n) {
+                if (array_key_exists($n, $v) && $v[$n] !== null) {
+                    $v[$n] = (float) $v[$n];
+                }
+            }
+            foreach (['countWin', 'countLoss', 'countMartingale', 'monthCountWin', 'monthCountLoss'] as $n) {
+                if (array_key_exists($n, $v) && $v[$n] !== null) {
+                    $v[$n] = (int) $v[$n];
+                }
+            }
+            if (array_key_exists('isGale', $v)) {
+                $v['isGale'] = (bool) (int) $v['isGale'];
+            }
+            return $v;
+        };
+
+        json_response([
+            'id' => (int) $user['id'],
+            'name' => $user['name'],
+            'email' => $user['email'],
+            'accountType' => $user['accountType'],
+            'gameType' => $gameType,
+            'isActive' => (bool) $user['isActive'],
+            'isBetting' => (bool) $user['isBetting'],
+            'paymentStatus' => $user['paymentStatus'],
+            'expireIn' => $user['expireIn'],
+            'isTesting' => (bool) $user['isTesting'],
+            'isAdminAccount' => (bool) $user['isAdminAccount'],
+            'alreadyTested' => (bool) $user['alreadyTested'],
+            'features' => $user['features'],
+            'hasToken' => !empty($user['token']),
+            'blazeEmail' => $user['blazeEmail'] ?? null,
+            'connectPending' => (bool) ($user['connectPending'] ?? false),
+            'connectError' => $user['connectError'] ?? null,
+            'hasJonbetToken' => !empty($user['jonbetToken']),
+            'jonbetConnectPending' => (bool) ($user['jonbetConnectPending'] ?? false),
+            'jonbetConnectError' => $user['jonbetConnectError'] ?? null,
+            'jonbetEmail' => $user['jonbetEmail'] ?? null,
+            'jonbetAccountType' => $user['jonbetAccountType'] ?? 'DEMO',
+            'jonbetGameType' => $jonbetGameType,
+            'jonbetIsActive' => (bool) ($user['jonbetIsActive'] ?? false),
+            'jonbetIsBetting' => (bool) ($user['jonbetIsBetting'] ?? false),
+            'hiddenTabs' => $hiddenTabs,
+            'hiddenGames' => $hiddenGames,
+            'hiddenStrategies' => $hiddenStrategies,
+            'settings' => $normalizeSettings(is_array($user['settings'] ?? null) ? $user['settings'] : null),
+            'variables' => $normalizeVars($this->demoSafeVariables(
+                is_array($user['variables'] ?? null) ? $user['variables'] : null,
+                (string) ($user['accountType'] ?? 'DEMO')
+            )),
+            'strategies' => $user['strategies'] ?? [],
+            'bacBoSettings' => $normalizeSettings(is_array($user['bacBoSettings'] ?? null) ? $user['bacBoSettings'] : null),
+            'bacBoVariables' => $normalizeVars(is_array($user['bacBoVariables'] ?? null) ? $user['bacBoVariables'] : null),
+            'jonbetSettings' => $normalizeSettings(is_array($user['jonbetSettings'] ?? null) ? $user['jonbetSettings'] : null),
+            'jonbetVariables' => $normalizeVars($this->demoSafeVariables(
+                is_array($user['jonbetVariables'] ?? null) ? $user['jonbetVariables'] : null,
+                (string) ($user['jonbetAccountType'] ?? 'DEMO')
+            )),
+        ]);
+    }
+
+    /**
+     * Em DEMO, se o saldo ainda for o da conta real (ou modo errado),
+     * devolve banca virtual de 1000 para a UI não misturar.
+     *
+     * @param  array<string,mixed>|null  $vars
+     * @return array<string,mixed>|null
+     */
+    private function demoSafeVariables(?array $vars, string $accountType): ?array
+    {
+        if ($accountType !== 'DEMO') {
+            return $vars;
+        }
+        if (!$vars) {
+            return ['balance' => 1000.0, 'profit' => 0.0, 'firstBalance' => 1000.0, 'firstBalanceMode' => 'DEMO'];
+        }
+        $mode = (string) ($vars['firstBalanceMode'] ?? '');
+        $bal = (float) ($vars['balance'] ?? 0);
+        if ($mode !== 'DEMO' || $bal <= 0) {
+            $vars['balance'] = 1000.0;
+            $vars['firstBalance'] = 1000.0;
+            $vars['profit'] = 0.0;
+            $vars['firstBalanceMode'] = 'DEMO';
+        }
+        return $vars;
+    }
+}

@@ -24,9 +24,9 @@ final class BacBoEngine
     // Payout líquido (lucro, não retorno total) de uma vitória no Empate —
     // Bac Bo paga tipicamente 8:1 no empate contra 1:1 em Player/Banker.
     private const EMPATE_NET_MULTIPLIER = 8;
-    // Mínimos: DEMO/mesa clássica R$5; mesas PT (PorBacBo) aceitam R$2,50.
+    // Mesa real Blaze bac-bo (BacBo00000000001): tableMinLimit = 5.
     private const MIN_BET_DEMO = 5.0;
-    private const MIN_BET_REAL = 2.5;
+    private const MIN_BET_REAL = 5.0;
 
     private int $userId;
     private bool $forceReset;
@@ -34,11 +34,12 @@ final class BacBoEngine
     private ?BlazeAPI $api;
     private bool $running = false;
 
-    /** @var list<array{winner:string,player1:int,player2:int,banker1:int,banker2:int}> */
+    /** @var list<array{winner:string,score:int,player1:int,player2:int,banker1:int,banker2:int}> */
     private array $history = [];
     private ?string $lastSeenId = null;
     private int $liveRoundsCount = 0;
-    private int $cooldownRoundsRemaining = self::COOLDOWN_ROUNDS;
+    // Começa em 0 — senão as 2 primeiras rodadas bloqueiam entrada pós-observação
+    private int $cooldownRoundsRemaining = 0;
 
     private int $currentGale = 0;
     private float $currentBetAmount = 0;
@@ -67,6 +68,8 @@ final class BacBoEngine
     private float $peakProfit = 0;
     private bool $betInFlight = false;
     private bool $pendingStop = false;
+    /** Sinal REAL pendente (falha de mesa / aguardando janela) — re-tenta sem redetectar. */
+    private ?string $pendingRealSignal = null;
 
     private ?array $cachedSettings = null;
     private ?array $cachedStrategies = null;
@@ -120,9 +123,25 @@ final class BacBoEngine
     {
         $token = $this->api?->getToken();
         if (!$token) {
-            $this->msg('⚠️ Token Blaze ausente — caindo para DEMO nesta sessão.');
-            $this->isDemo = true;
+            // NÃO muda isDemo aqui — o usuário pediu CONTA REAL.
+            // Entradas falham com erro claro até reconectar a Blaze.
+            $this->msg('⚠️ Token Blaze ausente — modo REAL sem token. Conecte a conta Blaze e reinicie o bot.');
             return;
+        }
+        // Espelha banca real no painel Bac Bo (não deixar R$ 1000 de DEMO)
+        try {
+            $wallet = $this->api->getWallet();
+            $bal = $this->api->extractBalance($wallet);
+            if ($bal > 0) {
+                $this->simulatedBalance = $bal;
+                Database::update('bacbo_variables', [
+                    'balance' => $bal,
+                    'firstBalance' => $bal,
+                    'profit' => 0,
+                ], 'ownerId = :oid', ['oid' => $this->userId]);
+            }
+        } catch (\Throwable) {
+            // mantém saldo já em bacbo_variables
         }
         try {
             $play = $this->api->playBacBo('BRL');
@@ -131,10 +150,10 @@ final class BacBoEngine
             if (!empty($res['ok'])) {
                 $this->msg('🔗 Mesa Evolution pronta (user #' . $this->userId . ') · table ' . ($res['tableId'] ?? '?'));
             } else {
-                $this->msg('⚠️ Launch Evolution: ' . ($res['error'] ?? 'falhou') . ' — tentará de novo em cada entrada.');
+                $this->msg('⚠️ Launch Evolution: ' . ($res['error'] ?? 'falhou') . ' — tentará de novo em cada entrada (modo REAL mantido).');
             }
         } catch (\Throwable $e) {
-            $this->msg('⚠️ Launch Bac Bo: ' . $e->getMessage());
+            $this->msg('⚠️ Launch Bac Bo: ' . $e->getMessage() . ' — modo REAL mantido.');
         }
     }
 
@@ -207,25 +226,52 @@ final class BacBoEngine
         if (!$rows) {
             return;
         }
-        $this->history = array_map(static fn (array $r) => [
-            'winner' => (string) $r['winner'],
-            'player1' => (int) $r['player1'],
-            'player2' => (int) $r['player2'],
-            'banker1' => (int) $r['banker1'],
-            'banker2' => (int) $r['banker2'],
-        ], $rows);
+        $this->history = array_map(static function (array $r): array {
+            $winner = (string) $r['winner'];
+            $pt = (int) ($r['playerTotal'] ?? ((int) $r['player1'] + (int) $r['player2']));
+            $bt = (int) ($r['bankerTotal'] ?? ((int) $r['banker1'] + (int) $r['banker2']));
+            $score = match ($winner) {
+                'PlayerWon' => $pt,
+                'BankerWon' => $bt,
+                default => max($pt, $bt),
+            };
+            return [
+                'winner' => $winner,
+                'score' => $score,
+                'player1' => (int) $r['player1'],
+                'player2' => (int) $r['player2'],
+                'banker1' => (int) $r['banker1'],
+                'banker2' => (int) $r['banker2'],
+                'playerTotal' => $pt,
+                'bankerTotal' => $bt,
+            ];
+        }, $rows);
         $this->lastSeenId = (string) $rows[0]['externalId'];
     }
 
-    /** @param array{id:string,created_at:string,diceplayer1:int,diceplayer2:int,dicebanker1:int,dicebanker2:int,winner:string} $raw */
+    /** @param array{id:string,created_at:string,diceplayer1:int,diceplayer2:int,dicebanker1:int,dicebanker2:int,winner:string,score?:int} $raw */
     private function pushHistory(array $raw): void
     {
+        $winner = (string) $raw['winner'];
+        $score = (int) ($raw['score'] ?? 0);
+        if ($score <= 0) {
+            $score = BacBoSource::scoreOfResult([
+                'winner' => $winner,
+                'player1' => (int) $raw['diceplayer1'],
+                'player2' => (int) $raw['diceplayer2'],
+                'banker1' => (int) $raw['dicebanker1'],
+                'banker2' => (int) $raw['dicebanker2'],
+            ]);
+        }
         array_unshift($this->history, [
-            'winner' => (string) $raw['winner'],
+            'winner' => $winner,
+            'score' => $score,
             'player1' => (int) $raw['diceplayer1'],
             'player2' => (int) $raw['diceplayer2'],
             'banker1' => (int) $raw['dicebanker1'],
             'banker2' => (int) $raw['dicebanker2'],
+            'playerTotal' => $winner === 'PlayerWon' || $winner === 'Tie' ? $score : 0,
+            'bankerTotal' => $winner === 'BankerWon' || $winner === 'Tie' ? $score : 0,
         ]);
         if (count($this->history) > 14) {
             array_pop($this->history);
@@ -290,11 +336,25 @@ final class BacBoEngine
         if ($this->sfeObserving) {
             $this->handleObservationResult($resultOutcome);
             $this->pushHistory($raw);
+            // Pós-observação: após o resultado, tenta entrar (REAL espera janela da mesa no bridge).
+            if ($this->sfeReady && $this->running) {
+                $this->cooldownRoundsRemaining = 0;
+                log_msg("[bacbo:{$this->userId}] pós-observação → entrada após resultado ({$this->sfeColor})", 'bot');
+                if (!$this->isDemo) {
+                    $this->msg("📡 Resultado da observação recebido — verificando se a janela de apostas está aberta…");
+                }
+                $this->decideEntry();
+            }
             return;
         }
 
         if ($this->betInFlight) {
             $this->resolveBet($resultOutcome);
+            // resolveBet já tenta gale (com espera de janela em REAL); se bet em voo, para
+            if ($this->betInFlight || !$this->running) {
+                $this->pushHistory($raw);
+                return;
+            }
         }
 
         $this->pushHistory($raw);
@@ -305,7 +365,8 @@ final class BacBoEngine
         if ($this->liveRoundsCount < 1) {
             return;
         }
-        if ($this->cooldownRoundsRemaining > 0) {
+        // Entrada pendente (pós-obs / falha REAL / gale) ignora cooldown e re-tenta
+        if ($this->cooldownRoundsRemaining > 0 && !$this->sfeReady && $this->pendingRealSignal === null) {
             return;
         }
 
@@ -336,12 +397,24 @@ final class BacBoEngine
         }
 
         $inGale = !empty($vars['isGale']) && !empty($user['colorBefore']);
+        $fromSfe = false;
 
-        if ($inGale) {
+        if ($this->pendingRealSignal !== null && $this->pendingRealSignal !== '') {
+            // Re-tentativa REAL (mesa falhou / janela fechada) — não redetecta padrão
+            $signal = $this->pendingRealSignal;
+        } elseif ($inGale) {
             $signal = (string) $user['colorBefore'];
+            if ($this->currentSignalColor === '') {
+                $this->currentSignalColor = $signal;
+            }
+            if ($this->currentSignalPattern === '' && $this->lastMatchedPattern !== '') {
+                $this->currentSignalPattern = $this->lastMatchedPattern;
+            }
         } elseif ($this->sfeReady) {
+            // NÃO limpa sfeReady antes de placeBet — se a aposta REAL falhar,
+            // re-tenta na próxima rodada sem voltar para "observação".
             $signal = $this->sfeColor;
-            $this->sfeReady = false;
+            $fromSfe = true;
             $this->lastMatchedPattern = $this->sfePattern;
             $this->lastMatchedPatternAccuracy = $this->sfeAccuracy;
         } else {
@@ -373,7 +446,22 @@ final class BacBoEngine
             }
         }
 
-        $this->placeBet($signal, $settings, $vars);
+        $ok = $this->placeBet($signal, $settings, $vars);
+        if ($ok) {
+            $this->pendingRealSignal = null;
+            if ($fromSfe) {
+                $this->sfeReady = false;
+                $this->sfeColor = '';
+                $this->sfePattern = '';
+                $this->sfeAccuracy = null;
+            }
+        } else {
+            // Mantém sinal pendente (REAL sem mesa ou falha) — re-tenta no próximo resultado/tick
+            $this->pendingRealSignal = $signal;
+            if ($fromSfe) {
+                log_msg("[bacbo:{$this->userId}] entrada pendente mantida (*{$signal}*) — re-tentará com janela aberta", 'bot');
+            }
+        }
     }
 
     private function handleObservationResult(string $resultOutcome): void
@@ -394,7 +482,10 @@ final class BacBoEngine
             $this->sfeAccuracy = null;
         } elseif (!$this->sfeSimulateGales) {
             $this->sfeObserving = false;
-            $this->msg("✅ *Observação*: saiu {$resultOutcome} — não foi {$this->sfeColor}\n⏭️ Entrando na próxima rodada!");
+            $waitHint = $this->isDemo
+                ? "⏭️ Entrando em *{$this->sfeColor}* na próxima rodada"
+                : "⏭️ Entrando em *{$this->sfeColor}* quando a mesa abrir apostas";
+            $this->msg("✅ *Observação*: saiu {$resultOutcome} — não foi {$this->sfeColor}\n{$waitHint}");
             $this->logEntry('OBS_LOSS', $this->sfeColor, $resultOutcome, $this->sfePattern);
             $this->sfeReady = true;
         } else {
@@ -404,18 +495,22 @@ final class BacBoEngine
             } else {
                 $this->sfeObserving = false;
                 $this->sfeSimulateGales = false;
-                $this->msg("✅ *Observação*: sequência de gale inteira de *{$this->sfeColor}* perderia ({$this->sfeMaxGale} gales) — entrando na próxima rodada!");
+                $waitHint = $this->isDemo
+                    ? '— entrando na próxima rodada'
+                    : '— entrando quando a mesa abrir apostas';
+                $this->msg("✅ *Observação*: sequência de gale inteira de *{$this->sfeColor}* perderia ({$this->sfeMaxGale} gales) {$waitHint}");
                 $this->logEntry('OBS_LOSS', $this->sfeColor, $resultOutcome, $this->sfePattern);
                 $this->sfeReady = true;
             }
         }
     }
 
-    private function placeBet(string $signal, array $settings, array $vars): void
+    /** @return bool true se a entrada foi aberta (betInFlight) */
+    private function placeBet(string $signal, array $settings, array $vars): bool
     {
         $amount = $this->calcBetAmount($settings, $signal);
         if ($amount <= 0) {
-            return;
+            return false;
         }
         $min = $this->minBet();
         if ($amount < $min) {
@@ -424,8 +519,20 @@ final class BacBoEngine
         $this->currentBetAmount = $amount;
 
         $usesWhiteGale = !empty($settings['whiteEntryGaleEnabled']) && $signal === 'EMPATE';
-        $galeNum = (int) $vars['countMartingale'];
+        // Sincroniza gale com o banco (isGale / countMartingale) — evita entrada "sem mult" no gale
+        $galeNum = (int) ($vars['countMartingale'] ?? 0);
+        if (!empty($vars['isGale']) && $galeNum > 0) {
+            $this->currentGale = $galeNum;
+        }
         $maxGale = $usesWhiteGale ? (int) $settings['whiteEntryGale'] : (int) $settings['martingale'];
+        // Recalcula amount se currentGale acabou de sincronizar
+        if ($this->currentGale > 0) {
+            $amount = $this->calcBetAmount($settings, $signal);
+            if ($amount < $min) {
+                $amount = $min;
+            }
+            $this->currentBetAmount = $amount;
+        }
 
         $baseProt = (float) ($settings['protectionValue'] ?? 0);
         $rawHasProt = ($settings['protectionHand'] ?? '') === 'SIM' && $baseProt > 0 && $signal !== 'EMPATE';
@@ -436,46 +543,99 @@ final class BacBoEngine
         $this->currentProtectionAmount = $hasProt ? $protAmount : 0;
         $protText = $hasProt ? ' + 🛡️ EMPATE R$ ' . number_format($protAmount, 2, '.', '') : '';
 
-        // REAL: envia bacbo.bet na mesa Evolution (sessão só deste userId)
+        // REAL: SOMENTE ficha na mesa Evolution (HTTP/WS). Sem "REAL-API" fantasma.
+        // Fluxo: resultado (TipMiner) → bridge espera AcceptingBets/WaitingForBets → bacbo.bet.
+        $modeTag = 'DEMO';
         if (!$this->isDemo) {
             $token = $this->api?->getToken();
             if (!$token) {
-                $this->msg('⚠️ Sem token Blaze — entrada REAL abortada.');
-                return;
+                $this->msg('⚠️ Sem token Blaze — entrada REAL abortada (reconecte a conta).');
+                return false;
             }
             $modeTag = 'REAL';
             try {
+                $launchUrl = null;
+                try {
+                    $play = $this->api->playBacBo('BRL');
+                    $launchUrl = BlazeAPI::extractBacBoLaunchUrl(is_array($play) ? $play : []);
+                } catch (\Throwable) {
+                }
+                $this->msg(
+                    "⏳ *{$signal}* R$ " . number_format($amount, 2, '.', '')
+                    . " — aguardando **janela de apostas aberta** na mesa Evolution…"
+                );
                 $res = EvolutionBacBo::placeBet(
                     $this->userId,
                     $token,
                     $signal,
                     $amount,
-                    $this->currentProtectionAmount
+                    $this->currentProtectionAmount,
+                    $launchUrl
                 );
                 if (empty($res['ok'])) {
-                    $this->msg('❌ Aposta REAL falhou: ' . ($res['error'] ?? 'erro desconhecido'));
-                    return;
+                    $err = (string) ($res['error'] ?? 'erro desconhecido');
+                    $this->msg(
+                        "❌ Aposta REAL *não* enviada na mesa: {$err}\n"
+                        . "🔁 Mantendo *{$signal}* — no próximo resultado tenta de novo **só com janela aberta**.\n"
+                        . "💡 Feche o Bac Bo no browser (1 sessão por EVOSESSIONID)."
+                    );
+                    return false;
                 }
                 $conf = !empty($res['confirmed']) ? 'confirmada' : 'enviada';
-                $this->msg("📡 Aposta REAL {$conf} na mesa " . ($res['tableId'] ?? '?') . " (user #{$this->userId})");
+                $gid = $res['gameId'] ?? '?';
+                $this->msg(
+                    "📡 Aposta REAL {$conf} na mesa " . ($res['tableId'] ?? '?')
+                    . " · game {$gid} · R$ " . number_format($amount, 2, '.', '')
+                    . " [janela aberta ✓]"
+                );
             } catch (\Throwable $e) {
-                $this->msg('❌ Bridge Bac Bo: ' . $e->getMessage());
-                return;
+                $this->msg(
+                    '⚠️ Bridge Evolution: ' . $e->getMessage()
+                    . "\n🔁 Mantendo *{$signal}* — re-tentando após o próximo resultado (janela aberta)."
+                );
+                return false;
             }
-        } else {
-            $modeTag = 'DEMO';
         }
 
         UserRepository::update($this->userId, ['isBetting' => 1, 'colorBet' => $signal]);
         $this->betInFlight = true;
         $this->currentSignalColor = $signal;
-        $this->currentSignalPattern = $this->lastMatchedPattern;
+        if ($this->lastMatchedPattern !== '') {
+            $this->currentSignalPattern = $this->lastMatchedPattern;
+        } elseif ($this->currentSignalPattern === '') {
+            $this->currentSignalPattern = $this->lastMatchedPattern;
+        }
 
         if ($this->currentGale > 0) {
-            $this->msg("🔄 Gale {$galeNum}/{$maxGale}: *{$signal}* — R$ " . number_format($amount, 2, '.', '') . $protText . " | 📋 {$this->lastMatchedPattern}{$this->accuracySuffix()} [{$modeTag}]");
+            $this->msg(
+                "🔄 Gale {$galeNum}/{$maxGale}: *{$signal}* — R$ " . number_format($amount, 2, '.', '')
+                . $protText . " | 📋 {$this->currentSignalPattern}{$this->accuracySuffix()} [{$modeTag}]"
+            );
+            $this->logEntry(
+                'GALE',
+                $signal,
+                null,
+                $this->currentSignalPattern,
+                $amount,
+                null,
+                $galeNum
+            );
         } else {
-            $this->msg("🎯 Entrando: *{$signal}* — R$ " . number_format($amount, 2, '.', '') . $protText . " | 📋 {$this->lastMatchedPattern}{$this->accuracySuffix()} [{$modeTag}]");
+            $this->msg(
+                "🎯 Entrando: *{$signal}* — R$ " . number_format($amount, 2, '.', '')
+                . $protText . " | 📋 {$this->currentSignalPattern}{$this->accuracySuffix()} [{$modeTag}]"
+            );
+            $this->logEntry(
+                'ENTRADA',
+                $signal,
+                null,
+                $this->currentSignalPattern,
+                $amount,
+                null,
+                0
+            );
         }
+        return true;
     }
 
     private function resolveBet(string $resultOutcome): void
@@ -526,6 +686,8 @@ final class BacBoEngine
             }
         }
 
+        $galeContinues = false;
+
         if ($won) {
             $patternMissed = $betColor !== $resultOutcome;
             $profit = $this->handleWin($resultOutcome, $patternMissed);
@@ -542,16 +704,48 @@ final class BacBoEngine
                 if ($vars) {
                     $this->checkStop(array_merge($vars, ['profit' => $res['newProfit']]));
                 }
+            } else {
+                // Ainda tem gale — NÃO para no pendingStop até fechar o ciclo (WIN ou gales esgotados)
+                $galeContinues = true;
             }
         }
 
-        if ($this->pendingStop) {
+        // Parar só quando a "entrada" terminou de verdade (sem gale pendente)
+        if ($this->pendingStop && !$galeContinues) {
             $this->pendingStop = false;
             $this->stop();
             UserRepository::update($this->userId, ['isActive' => 0, 'isBetting' => 0]);
             $this->msg('⏹️ Entrada finalizada — parando o robô e todas as operações, como solicitado.');
             return;
         }
+
+        // Próximo gale: logo após o RESULTADO, mas a ficha REAL só sai quando a
+        // mesa abrir AcceptingBets/WaitingForBets (bridge espera a janela).
+        if ($galeContinues && $this->running) {
+            $this->cooldownRoundsRemaining = 0;
+            $this->refreshCache();
+            $settings = $this->cachedSettings ?? $this->getSettings();
+            $vars = Database::fetch('SELECT * FROM bacbo_variables WHERE ownerId = ?', [$this->userId]);
+            $signal = $this->currentSignalColor !== ''
+                ? $this->currentSignalColor
+                : (string) ($betColor ?? '');
+            if ($settings && $vars && $signal !== '') {
+                $this->pendingRealSignal = $signal;
+                log_msg("[bacbo:{$this->userId}] LOSS → gale G{$this->currentGale} {$signal} (espera janela se REAL)", 'bot');
+                if (!$this->isDemo) {
+                    $this->msg(
+                        "📡 *LOSS* registrado — verificando se a janela de apostas está aberta para o gale *{$signal}*…"
+                    );
+                }
+                $ok = $this->placeBet($signal, $settings, $vars);
+                if ($ok) {
+                    $this->pendingRealSignal = null;
+                }
+                // se falhou, pendingRealSignal + isGale no banco → re-tenta no próximo onNewResult
+            }
+            return;
+        }
+
         $this->refreshCache();
     }
 
@@ -607,8 +801,21 @@ final class BacBoEngine
                 'profit' => $profit,
                 'balance' => $newBalance,
             ], 'ownerId = :oid', ['oid' => $this->userId]);
-            $this->msg("❌ *LOSS* — {$resultOutcome} | Gale {$newMartingale}/{$maxGale}\nLucro: R$ " . number_format($profit, 2, '.', ''));
-            $this->logEntry('GALE', $this->currentSignalColor, $resultOutcome, $this->currentSignalPattern, $this->currentBetAmount, $profit, $newMartingale);
+            $this->msg(
+                "❌ *LOSS* — {$resultOutcome} | próximo Gale {$newMartingale}/{$maxGale}"
+                . "\nLucro: R$ " . number_format($profit, 2, '.', '')
+                . ($this->isDemo ? '' : "\n⏳ Após o resultado → só aposta se a **janela da mesa** estiver aberta")
+            );
+            // Não loga GALE aqui — GALE/ENTRADA só quando a ficha for de fato enviada em placeBet
+            $this->logEntry(
+                'LOSS',
+                $this->currentSignalColor,
+                $resultOutcome,
+                $this->currentSignalPattern,
+                $this->currentBetAmount,
+                $profit,
+                $newMartingale - 1
+            );
             return ['exhausted' => false, 'newProfit' => $profit];
         }
 
@@ -780,12 +987,32 @@ final class BacBoEngine
         if ($existing) {
             $this->simulatedBalance = (float) $existing['balance'];
         }
-        $balance = $this->simulatedBalance;
 
         $today = date('Y-m-d');
         $lastDate = $existing['firstBalanceDate'] ?? null;
         $isNewDay = (!$lastDate || date('Y-m-d', strtotime((string) $lastDate)) !== $today);
         $forceReset = $isNewDay || $this->forceReset;
+
+        // DEMO: toda nova sessão (start do bot / novo dia) reinicia em R$ 1.000
+        if ($this->isDemo && $forceReset) {
+            $this->simulatedBalance = 1000.0;
+        } elseif ($this->isDemo && $this->simulatedBalance <= 0) {
+            $this->simulatedBalance = 1000.0;
+        }
+
+        // REAL: puxa carteira Blaze (nunca força 1000)
+        if (!$this->isDemo && $this->api && $this->api->getToken()) {
+            try {
+                $wallet = $this->api->getWallet();
+                $live = $this->api->extractBalance($wallet);
+                if ($live > 0) {
+                    $this->simulatedBalance = $live;
+                }
+            } catch (\Throwable) {
+            }
+        }
+
+        $balance = $this->simulatedBalance;
 
         $monthKey = date('Y-m');
         $lastMonthDate = $existing['monthStartDate'] ?? null;
@@ -808,21 +1035,29 @@ final class BacBoEngine
             if ($forceReset) {
                 $data['countWin'] = 0;
                 $data['countLoss'] = 0;
+                // garante firstBalance alinhado à banca DEMO de 1000
+                if ($this->isDemo) {
+                    $data['balance'] = 1000;
+                    $data['firstBalance'] = 1000;
+                    $this->simulatedBalance = 1000.0;
+                }
             }
             if ($isNewMonth) {
-                $data['monthStartBalance'] = $balance;
+                $data['monthStartBalance'] = $this->isDemo ? 1000 : $balance;
                 $data['monthStartDate'] = now();
                 $data['monthCountWin'] = 0;
                 $data['monthCountLoss'] = 0;
             }
             Database::update('bacbo_variables', $data, 'ownerId = :oid', ['oid' => $this->userId]);
         } else {
+            $start = $this->isDemo ? 1000.0 : max(0.0, $balance);
+            $this->simulatedBalance = $start;
             Database::insert('bacbo_variables', [
                 'ownerId' => $this->userId,
-                'balance' => $balance,
-                'firstBalance' => $balance,
+                'balance' => $start,
+                'firstBalance' => $start,
                 'firstBalanceDate' => now(),
-                'monthStartBalance' => $balance,
+                'monthStartBalance' => $start,
                 'monthStartDate' => now(),
             ]);
         }

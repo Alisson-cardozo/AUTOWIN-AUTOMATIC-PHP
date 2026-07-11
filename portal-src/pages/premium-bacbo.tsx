@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react"
+import { useEffect, useState, useCallback } from "react"
 import { NumberField } from "@/components/ui/NumberField"
 
 // ─── Tipos ──────────────────────────────────────────────────────────────────
@@ -9,7 +9,9 @@ interface BacBoResult {
   diceplayer2: number
   dicebanker1: number
   dicebanker2: number
-  winner: string // "PlayerWon" | "BankerWon" | outro valor = empate
+  winner: string
+  score?: number
+  result?: number
 }
 
 interface PatternResult {
@@ -22,24 +24,7 @@ interface PatternResult {
   hitRate: number
 }
 
-type SignalStatus = "AGUARDANDO" | "WIN" | "GALE1" | "GALE2" | "GALE3" | "GALE4" | "GALE5" | "LOSS"
-
-interface LiveSignal {
-  id: number
-  sequence: string
-  betOutcomeNum: number
-  hitRatePct: number
-  occurrences: number
-  recommendedGales: number
-  entryIndex: number
-  createdAtHHMM: string
-  status: SignalStatus
-  resolvedAtHHMM?: string
-}
-
 // ─── Helpers ────────────────────────────────────────────────────────────────
-// 0 = EMPATE (ocupa o mesmo "lugar" do Branco no Double — resultado raro),
-// 1 = PLAYER, 2 = BANKER
 function winnerCode(w: string): number {
   if (w === "PlayerWon") return 1
   if (w === "BankerWon") return 2
@@ -56,8 +41,7 @@ function toBR(iso: string) {
   }).formatToParts(d)
   const h = parseInt(parts.find((p) => p.type === "hour")?.value ?? "0")
   const m = parseInt(parts.find((p) => p.type === "minute")?.value ?? "0")
-  const s = parseInt(parts.find((p) => p.type === "second")?.value ?? "0")
-  return { h, m, s, hhmm: `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}` }
+  return { hhmm: `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}` }
 }
 
 async function fetchBacBoRecent(): Promise<{ results: BacBoResult[]; total: number; apiDown: boolean }> {
@@ -71,38 +55,77 @@ async function fetchBacBoRecent(): Promise<{ results: BacBoResult[]; total: numb
   }
 }
 
-// Menor quantidade de gales que já cobre a meta de acerto acumulado — é o
-// "até qual gale a pessoa fazer" mostrado no sinal ao vivo.
-function recommendedGaleCount(wins: number, galeWins: number[], occurrences: number, targetCoverage = 0.7): number {
-  let cum = wins
-  if (occurrences > 0 && cum / occurrences >= targetCoverage) return 0
-  for (let g = 0; g < galeWins.length; g++) {
-    cum += galeWins[g]
-    if (occurrences > 0 && cum / occurrences >= targetCoverage) return g + 1
-  }
-  return galeWins.length
-}
-
 const outcomeBadgeClass = (code: number) =>
   code === 1 ? "bg-blue-500/20 text-blue-400 border-blue-500/30"
   : code === 2 ? "bg-red-500/20 text-red-400 border-red-500/30"
   : "bg-yellow-500/20 text-yellow-300 border-yellow-500/30"
 
-// Diferença de pontos entre os dados de Player e Banker — usada pra deixar
-// o padrão mais fino que só "quem ganhou": distingue vitória apertada
-// (jogo mais equilibrado) de vitória folgada (lado dominou o placar).
-function marginBucket(r: BacBoResult): "APERTADA" | "FOLGADA" {
-  const playerTotal = r.diceplayer1 + r.diceplayer2
-  const bankerTotal = r.dicebanker1 + r.dicebanker2
-  return Math.abs(playerTotal - bankerTotal) >= 4 ? "FOLGADA" : "APERTADA"
+/** Total do vencedor (TipMiner score ou soma dos dados). */
+function scoreOf(r: BacBoResult): number {
+  if (typeof r.score === "number" && r.score > 0) return r.score
+  if (typeof r.result === "number" && r.result > 0) return r.result
+  const code = winnerCode(r.winner)
+  if (code === 1) return r.diceplayer1 + r.diceplayer2
+  if (code === 2) return r.dicebanker1 + r.dicebanker2
+  return r.diceplayer1 + r.diceplayer2
 }
 
-// Token usado pra montar a sequência do padrão — combina o vencedor com o
-// placar da rodada (empate não tem margem, fica só "EMPATE").
-function roundToken(r: BacBoResult): string {
-  const code = winnerCode(r.winner)
-  if (code === 0) return "EMPATE"
-  return `${OUTCOME_NAME[code]}_${marginBucket(r)}`
+/** Token SEQUÊNCIA (igual Double): só o lado. */
+function seqTokenOf(r: BacBoResult): string {
+  return OUTCOME_NAME[winnerCode(r.winner)]
+}
+
+/** Token SOMA exato: PLAYER_8, BANKER_4, EMPATE_6 */
+function somaTokenExact(r: BacBoResult): string {
+  const side = OUTCOME_NAME[winnerCode(r.winner)]
+  const sc = scoreOf(r)
+  return sc > 0 ? `${side}_${sc}` : `${side}_X`
+}
+
+/** Token só lado (qualquer total): PLAYER_X, BANKER_X, EMPATE_X */
+function somaTokenWild(r: BacBoResult): string {
+  return `${OUTCOME_NAME[winnerCode(r.winner)]}_X`
+}
+
+/** Opções de token por rodada: exato + curinga de lado (não precisa alinhar o número). */
+function somaTokenOptions(r: BacBoResult): string[] {
+  const exact = somaTokenExact(r)
+  const wild = somaTokenWild(r)
+  return exact === wild ? [exact] : [exact, wild]
+}
+
+/** Produto cartesiano — gera combinações exact/wild da janela. */
+function cartesian(opts: string[][]): string[][] {
+  return opts.reduce<string[][]>(
+    (acc, list) => {
+      const next: string[][] = []
+      for (const a of acc) for (const b of list) next.push([...a, b])
+      return next
+    },
+    [[]]
+  )
+}
+
+function parseTokenSide(token: string): number {
+  const base = token.split("_")[0].toUpperCase()
+  if (base === "PLAYER") return 1
+  if (base === "BANKER") return 2
+  return 0
+}
+
+function formatSomaTokenLabel(token: string): string {
+  const [side, sc] = token.toUpperCase().split("_")
+  const lab = side === "PLAYER" ? "Azul" : side === "BANKER" ? "Vermelho" : "Empate"
+  if (!sc || sc === "X") return `qualquer ${lab.toLowerCase()}`
+  return `${sc} ${lab.toLowerCase()}`
+}
+
+function specificity(seq: string): number {
+  // quantos itens têm total fixo (não _X)
+  return seq.split(",").filter((t) => {
+    const p = t.split("_")
+    return p.length > 1 && p[1] !== "X"
+  }).length
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -171,11 +194,12 @@ function HistoricoTab() {
       <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">
         {results.map((r) => {
           const code = winnerCode(r.winner)
+          const sc = scoreOf(r)
           return (
             <div key={r.id} className={`flex flex-col items-center gap-0.5 rounded-xl p-2 border ${outcomeBadgeClass(code)}`}>
               <span className="text-lg leading-none">{OUTCOME_EMOJI[code]}</span>
               <span className="text-[10px] font-bold">{OUTCOME_NAME[code]}</span>
-              <span className="text-[9px] text-gray-500">{r.diceplayer1}+{r.diceplayer2} × {r.dicebanker1}+{r.dicebanker2}</span>
+              <span className="text-sm font-bold text-white tabular-nums">{sc > 0 ? sc : "—"}</span>
               <span className="text-[9px] text-gray-600">{toBR(r.created_at).hhmm}</span>
             </div>
           )
@@ -191,92 +215,141 @@ function HistoricoTab() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  ABA 2 — SINAIS COM IA (ao vivo)
+//  ABA 2 — BUSCAR PADRÃO (Sequência | Soma | Empate)
 // ═══════════════════════════════════════════════════════════════════════════
-// Parâmetros fixos do motor — nada disso é configurável pelo cliente, o
-// sinal roda sozinho assim que a aba abre.
-const ENGINE_SEQ_LEN     = 2
-const ENGINE_MIN_OCC      = 5
-const ENGINE_MAX_GALES    = 3
-const ENGINE_MIN_HIT_RATE = 0.9 // 90% de assertividade mínima
+type SearchMode = "sequencia" | "soma" | "empate"
 
-function SinaisIATab() {
-  const [activeSignal, setActiveSignal] = useState<LiveSignal | null>(null)
-  const [signalHistory, setSignalHistory] = useState<LiveSignal[]>([])
-  const [historyCount, setHistoryCount] = useState(0)
+const LS_PATTERNS = "premium_bacbo_padrao_patterns_v2"
+const LS_ACTIVE = "premium_bacbo_active_patterns"
 
-  const historyRef = useRef<BacBoResult[]>([])
-  const seenIdsRef = useRef<Set<string>>(new Set())
-  const activeSignalRef = useRef<LiveSignal | null>(null)
-  const nextIdRef = useRef(1)
+function loadPatternsForMode(mode: SearchMode): PatternResult[] {
+  try {
+    const raw = localStorage.getItem(LS_PATTERNS)
+    if (!raw) return []
+    const all = JSON.parse(raw) as Record<string, PatternResult[]>
+    return Array.isArray(all[mode]) ? all[mode] : []
+  } catch {
+    return []
+  }
+}
 
-  const tick = useCallback(async () => {
-    const { results } = await fetchBacBoRecent()
-    if (!results.length) return
+function savePatternsForMode(mode: SearchMode, list: PatternResult[]) {
+  try {
+    const raw = localStorage.getItem(LS_PATTERNS)
+    const all: Record<string, PatternResult[]> = raw ? JSON.parse(raw) : {}
+    all[mode] = list
+    localStorage.setItem(LS_PATTERNS, JSON.stringify(all))
+  } catch {
+    /* */
+  }
+}
 
-    // A API devolve mais recente primeiro — inverte pra ordem cronológica
-    const chronological = [...results].reverse()
-    let changed = false
-    for (const r of chronological) {
-      if (!seenIdsRef.current.has(r.id)) {
-        seenIdsRef.current.add(r.id)
-        historyRef.current.push(r)
-        changed = true
-      }
+function BuscarPadraoTab({ initialMode = "sequencia" as SearchMode }: { initialMode?: SearchMode }) {
+  const [searchMode, setSearchMode] = useState<SearchMode>(initialMode)
+  const [gales, setGales] = useState(1)
+  const [minOcc, setMinOcc] = useState(2)
+  /** Sequência: 2–4 itens */
+  const [seqLen, setSeqLen] = useState(2)
+  const [loading, setLoading] = useState(false)
+  // Padrões por modo — Sequência não mistura com Soma/Empate
+  const [patterns, setPatterns] = useState<PatternResult[]>(() => loadPatternsForMode(initialMode))
+  const [sampleSize, setSampleSize] = useState(0)
+  const [saving, setSaving] = useState<string | null>(null)
+  const [saved, setSaved] = useState<Set<string>>(() => {
+    try {
+      const s = localStorage.getItem(LS_ACTIVE)
+      if (!s) return new Set()
+      const arr = JSON.parse(s) as { sequence: string; betOutcome: string }[]
+      return new Set(arr.map((p) => `${p.sequence}→${p.betOutcome}`))
+    } catch {
+      return new Set()
     }
-    if (historyRef.current.length > 500) historyRef.current = historyRef.current.slice(-500)
-    if (!changed) return
+  })
+  const [infoMsg, setInfoMsg] = useState("")
 
-    const hist = historyRef.current
-    setHistoryCount(hist.length)
+  useEffect(() => {
+    setSearchMode(initialMode)
+    setPatterns(loadPatternsForMode(initialMode))
+    if (initialMode === "sequencia") setMinOcc(5)
+    else setMinOcc(3)
+  }, [initialMode])
 
-    // 1) Se tem sinal ativo, checa se as rodadas reais seguintes já resolveram.
-    // O teto aqui é o gale RECOMENDADO ao cliente (não o teto interno do
-    // motor) — se o sinal disse "até gale 1", só entrada+gale1 contam como
-    // vitória; bater só no gale 2 em diante é derrota de verdade, porque foi
-    // além do que a pessoa foi orientada a fazer.
-    const active = activeSignalRef.current
-    if (active && active.status === "AGUARDANDO") {
-      for (let g = 0; g <= active.recommendedGales; g++) {
-        const idx = active.entryIndex + g
-        if (idx >= hist.length) break // essa rodada ainda não aconteceu
-        const code = winnerCode(hist[idx].winner)
-        if (code === active.betOutcomeNum) {
-          const resolved: LiveSignal = { ...active, status: (g === 0 ? "WIN" : (`GALE${g}` as SignalStatus)), resolvedAtHHMM: toBR(hist[idx].created_at).hhmm }
-          activeSignalRef.current = null
-          setActiveSignal(null)
-          setSignalHistory((sh) => [resolved, ...sh].slice(0, 50))
-          break
-        }
-        if (g === active.recommendedGales) {
-          // esgotou os gales recomendados sem bater
-          const resolved: LiveSignal = { ...active, status: "LOSS", resolvedAtHHMM: toBR(hist[idx].created_at).hhmm }
-          activeSignalRef.current = null
-          setActiveSignal(null)
-          setSignalHistory((sh) => [resolved, ...sh].slice(0, 50))
-        }
+  useEffect(() => {
+    const st = searchMode === "sequencia" ? "SEQUÊNCIA" : "SOMA"
+    fetch(`/api/user/bacbo/estrategias?strategyType=${encodeURIComponent(st)}`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((list) => {
+        if (!Array.isArray(list)) return
+        setSaved((prev) => {
+          const next = new Set(prev)
+          for (const s of list) next.add(`${s.sequence}→${s.color}`)
+          return next
+        })
+      })
+      .catch(() => {})
+  }, [searchMode])
+
+  async function analyze() {
+    setLoading(true)
+    setInfoMsg("")
+    const len = Math.max(2, Math.min(4, seqLen))
+
+    try {
+      const { results } = await fetchBacBoRecent()
+      const sorted = [...results].sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      )
+      setSampleSize(sorted.length)
+
+      if (sorted.length < len + 1) {
+        setPatterns([])
+        setInfoMsg(`Poucos resultados (${sorted.length}). Precisa de pelo menos ${len + 1}.`)
+        return
       }
-    }
 
-    // 2) Sem sinal ativo — tenta detectar um novo olhando a "cauda" do histórico.
-    // A sequência usa o placar de cada rodada (roundToken), não só quem
-    // ganhou — vitória apertada e vitória folgada contam como padrões
-    // diferentes, deixando a detecção mais fina.
-    if (!activeSignalRef.current && hist.length >= ENGINE_SEQ_LEN + 10) {
-      const stats: Record<string, { occurrences: number; wins: number; galeWins: number[] }> = {}
-      for (let i = ENGINE_SEQ_LEN; i < hist.length; i++) {
-        const seq = hist.slice(i - ENGINE_SEQ_LEN, i).map(roundToken).join(",")
-        for (const betNum of [1, 2]) {
-          const key = `${seq}→${betNum}`
-          if (!stats[key]) stats[key] = { occurrences: 0, wins: 0, galeWins: new Array(ENGINE_MAX_GALES).fill(0) }
-          const s = stats[key]
-          s.occurrences++
-          if (winnerCode(hist[i].winner) === betNum) {
-            s.wins++
-          } else {
-            for (let g = 1; g <= ENGINE_MAX_GALES; g++) {
-              if (i + g < hist.length && winnerCode(hist[i + g].winner) === betNum) {
-                s.galeWins[g - 1]++
+      const outcomesToSearch = searchMode === "empate" ? [0] : [1, 2]
+      const maxGales = Math.max(0, gales)
+      const stats: Record<string, PatternResult> = {}
+      const lastI = sorted.length - 1
+
+      for (let i = len; i <= lastI; i++) {
+        const window = sorted.slice(i - len, i)
+
+        // SEQUÊNCIA: só lado. SOMA/EMPATE: combinações exact + wild (qualquer vermelho/azul)
+        let seqVariants: string[][]
+        if (searchMode === "sequencia") {
+          seqVariants = [window.map(seqTokenOf)]
+        } else {
+          seqVariants = cartesian(window.map(somaTokenOptions))
+        }
+
+        for (const tokens of seqVariants) {
+          const seqKey = tokens.join(",")
+          if (!seqKey) continue
+
+          for (const betNum of outcomesToSearch) {
+            const betOutcome = OUTCOME_NAME[betNum]
+            const key = `${seqKey}→${betOutcome}`
+
+            if (!stats[key]) {
+              stats[key] = {
+                sequence: seqKey,
+                betOutcome,
+                betOutcomeNum: betNum,
+                occurrences: 0,
+                wins: 0,
+                galeWins: new Array(Math.max(maxGales, 1)).fill(0),
+                hitRate: 0,
+              }
+            }
+            stats[key].occurrences++
+
+            for (let g = 0; g <= maxGales; g++) {
+              const idx = i + g
+              if (idx > lastI) break
+              if (OUTCOME_NAME[winnerCode(sorted[idx].winner)] === betOutcome) {
+                if (g === 0) stats[key].wins++
+                else if (g - 1 < stats[key].galeWins.length) stats[key].galeWins[g - 1]++
                 break
               }
             }
@@ -284,289 +357,315 @@ function SinaisIATab() {
         }
       }
 
-      const tailSeq = hist.slice(hist.length - ENGINE_SEQ_LEN).map(roundToken).join(",")
-      let best: { betNum: number; hitRate: number; occurrences: number; wins: number; galeWins: number[] } | null = null
-      for (const betNum of [1, 2]) {
-        const key = `${tailSeq}→${betNum}`
-        const s = stats[key]
-        if (!s || s.occurrences < ENGINE_MIN_OCC) continue
-        const totalWins = s.wins + s.galeWins.reduce((a, b) => a + b, 0)
-        const hitRate = totalWins / s.occurrences
-        if (hitRate >= ENGINE_MIN_HIT_RATE && (!best || hitRate > best.hitRate)) {
-          best = { betNum, hitRate, occurrences: s.occurrences, wins: s.wins, galeWins: s.galeWins }
-        }
-      }
+      const totalWins = (p: PatternResult) => p.wins + p.galeWins.reduce((a, b) => a + b, 0)
 
-      if (best) {
-        const newSignal: LiveSignal = {
-          id: nextIdRef.current++,
-          sequence: tailSeq,
-          betOutcomeNum: best.betNum,
-          hitRatePct: best.hitRate,
-          occurrences: best.occurrences,
-          recommendedGales: Math.min(ENGINE_MAX_GALES, recommendedGaleCount(best.wins, best.galeWins, best.occurrences)),
-          entryIndex: hist.length,
-          createdAtHHMM: toBR(new Date().toISOString()).hhmm,
-          status: "AGUARDANDO",
-        }
-        activeSignalRef.current = newSignal
-        setActiveSignal(newSignal)
-      }
-    }
-  }, [])
+      let list = Object.values(stats)
+        .filter((p) => p.occurrences >= minOcc)
+        .map((p) => ({ ...p, hitRate: totalWins(p) / Math.max(1, p.occurrences) }))
+        .sort(
+          (a, b) =>
+            b.hitRate - a.hitRate ||
+            b.occurrences - a.occurrences ||
+            specificity(b.sequence) - specificity(a.sequence)
+        )
 
-  // Roda sozinho assim que a aba abre — sem configuração nem botão manual.
-  useEffect(() => {
-    tick()
-    const iv = setInterval(tick, 4000)
-    return () => clearInterval(iv)
-  }, [tick])
-
-  const wins  = signalHistory.filter((s) => s.status === "WIN" || s.status.startsWith("GALE")).length
-  const total = signalHistory.length
-  const assertividade = total > 0 ? ((wins / total) * 100).toFixed(1) : "0.0"
-
-  const statusStyle = (status: SignalStatus) =>
-    status === "WIN" ? "bg-green-500/20 text-green-400 border-green-500/30"
-    : status.startsWith("GALE") ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
-    : status === "AGUARDANDO" ? "bg-gray-700/50 text-gray-300 border-gray-600"
-    : "bg-red-500/20 text-red-400 border-red-500/30"
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-          <span className="text-xs text-gray-400">Monitorando automaticamente — {historyCount} rodadas coletadas</span>
-        </div>
-        <span className="text-xs text-gray-500">Assertividade mínima: 90%</span>
-      </div>
-
-      {!activeSignal && (
-        <div className="flex items-center justify-center gap-3 h-20 text-gray-400 text-sm bg-gray-900 border border-gray-800 rounded-xl">
-          <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-          Monitorando... nenhum padrão formado ainda
-        </div>
-      )}
-
-      {activeSignal && (
-        <div className="bg-blue-500/10 border border-blue-500/40 rounded-xl p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-gray-400 uppercase tracking-wide font-medium">Sinal ao vivo — {activeSignal.createdAtHHMM}</p>
-            <span className={`text-xs font-bold px-3 py-1 rounded-full border ${statusStyle(activeSignal.status)}`}>
-              {activeSignal.status === "AGUARDANDO" ? "⏳ AGUARDANDO" : activeSignal.status}
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="text-2xl">{OUTCOME_EMOJI[activeSignal.betOutcomeNum]}</span>
-            <div>
-              <p className="text-white font-bold text-lg">{OUTCOME_NAME[activeSignal.betOutcomeNum]}</p>
-              <p className="text-xs text-gray-400">Padrão: {activeSignal.sequence.replace(/_/g, " ").replace(/,/g, " → ")}</p>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-2 text-center">
-            <div className="bg-gray-900/60 rounded-lg py-2">
-              <p className="text-base font-bold text-blue-400">{(activeSignal.hitRatePct * 100).toFixed(1)}%</p>
-              <p className="text-[10px] text-gray-500">Assertividade</p>
-            </div>
-            <div className="bg-gray-900/60 rounded-lg py-2">
-              <p className="text-base font-bold text-white">{activeSignal.occurrences}</p>
-              <p className="text-[10px] text-gray-500">Ocorrências</p>
-            </div>
-            <div className="bg-gray-900/60 rounded-lg py-2">
-              <p className="text-base font-bold text-yellow-400">até gale {activeSignal.recommendedGales}</p>
-              <p className="text-[10px] text-gray-500">Recomendado</p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {signalHistory.length > 0 && (
-        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-gray-800 flex items-center justify-between">
-            <p className="text-xs text-gray-500 uppercase tracking-wider font-medium">Histórico de sinais</p>
-            <span className="text-xs text-gray-400">WIN: {wins} | Assertividade: {assertividade}%</span>
-          </div>
-          <div className="divide-y divide-gray-800/60">
-            {signalHistory.map((s) => (
-              <div key={s.id} className="flex items-center justify-between px-4 py-3">
-                <div className="flex items-center gap-3">
-                  <span className="text-white font-mono text-sm font-bold">{s.createdAtHHMM}</span>
-                  <span className="text-xl">{OUTCOME_EMOJI[s.betOutcomeNum]}</span>
-                  <span className="text-xs text-gray-500">{(s.hitRatePct * 100).toFixed(0)}%</span>
-                </div>
-                <span className={`text-xs font-bold px-3 py-1 rounded-full border ${statusStyle(s.status)}`}>
-                  {s.status.startsWith("GALE") ? `GALE ${s.status.slice(4)}` : s.status}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  ABA 3 — BUSCAR PADRÃO
-// ═══════════════════════════════════════════════════════════════════════════
-function BuscarPadraoTab() {
-  const [gales,    setGales]    = useState(1)
-  const [minOcc,   setMinOcc]   = useState(5)
-  const [seqLen,   setSeqLen]   = useState(2)
-  const [mode,     setMode]     = useState<"normal" | "empate">("normal")
-  const [loading,  setLoading]  = useState(false)
-  const [patterns, setPatterns] = useState<PatternResult[]>([])
-  const [sampleSize, setSampleSize] = useState(0)
-
-  async function analyze(m: "normal" | "empate") {
-    setMode(m)
-    setLoading(true)
-    setPatterns([])
-
-    const { results } = await fetchBacBoRecent()
-    const sorted = [...results].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-    setSampleSize(sorted.length)
-
-    const stats: Record<string, PatternResult> = {}
-    const outcomesToSearch = m === "empate" ? [0] : [1, 2]
-    const effectiveGales  = m === "empate" ? Math.max(gales, 10) : gales
-    const effectiveSeqLen = m === "empate" ? Math.max(seqLen, 4) : seqLen
-
-    for (let i = effectiveSeqLen; i < sorted.length - effectiveGales; i++) {
-      // Sequência usa o placar de cada rodada (roundToken), não só quem
-      // ganhou — vitória apertada e folgada contam como padrões diferentes.
-      const seqKey = sorted.slice(i - effectiveSeqLen, i).map(roundToken).join(",")
-
-      for (const betNum of outcomesToSearch) {
-        const betOutcome = OUTCOME_NAME[betNum]
-        const key = `${seqKey}→${betOutcome}`
-
-        if (!stats[key]) stats[key] = {
-          sequence: seqKey, betOutcome, betOutcomeNum: betNum,
-          occurrences: 0, wins: 0, galeWins: new Array(effectiveGales).fill(0), hitRate: 0,
-        }
-        stats[key].occurrences++
-
-        const nextOutcome = OUTCOME_NAME[winnerCode(sorted[i].winner)]
-        if (nextOutcome === betOutcome) {
-          stats[key].wins++
-        } else {
-          for (let g = 1; g <= effectiveGales; g++) {
-            if (i + g < sorted.length && OUTCOME_NAME[winnerCode(sorted[i + g].winner)] === betOutcome) {
-              stats[key].galeWins[g - 1]++
-              break
-            }
+      let usedMin = minOcc
+      if (list.length === 0) {
+        for (const soft of [2, 1]) {
+          if (soft >= minOcc) continue
+          list = Object.values(stats)
+            .filter((p) => p.occurrences >= soft)
+            .map((p) => ({ ...p, hitRate: totalWins(p) / Math.max(1, p.occurrences) }))
+            .sort(
+              (a, b) =>
+                b.hitRate - a.hitRate ||
+                b.occurrences - a.occurrences ||
+                specificity(b.sequence) - specificity(a.sequence)
+            )
+          if (list.length > 0) {
+            usedMin = soft
+            setInfoMsg(`Nenhum com ≥${minOcc} ocorrências. Mostrando ≥${soft}.`)
+            break
           }
         }
       }
+
+      // Remove padrões 100% curingas na SOMA se houver alternativas com número fixo
+      // (ex.: prefira "7 azul → qualquer vermelho" a "qualquer azul → qualquer vermelho")
+      if (searchMode !== "sequencia") {
+        const hasSpecific = list.some((p) => specificity(p.sequence) > 0)
+        if (hasSpecific) {
+          list = list.filter((p) => specificity(p.sequence) > 0)
+        }
+      }
+
+      const top = list.slice(0, 12)
+      setPatterns(top)
+      savePatternsForMode(searchMode, top)
+
+      if (top.length === 0) {
+        setInfoMsg(`Nenhum padrão em ${sorted.length} resultados. Baixe o mínimo de ocorrências.`)
+      } else if (usedMin === minOcc) {
+        setInfoMsg(
+          `${top.length} padrões · ${sorted.length} resultados · mín. ${usedMin}` +
+            (searchMode !== "sequencia" ? " · curingas = qualquer total da cor" : "")
+        )
+      }
+    } catch (e) {
+      setInfoMsg("Erro ao buscar padrões. Tente de novo.")
+      console.error(e)
+    } finally {
+      setLoading(false)
     }
-
-    const totalWins = (p: PatternResult) => p.wins + p.galeWins.reduce((a, b) => a + b, 0)
-    const top = Object.values(stats)
-      .filter((p) => p.occurrences >= minOcc)
-      .map((p) => ({ ...p, hitRate: totalWins(p) / p.occurrences }))
-      .sort((a, b) => b.hitRate - a.hitRate)
-      .slice(0, 5)
-
-    setPatterns(top)
-    setLoading(false)
   }
 
-  const hitBg = (rate: number) => (rate >= 0.7 ? "text-green-400" : rate >= 0.55 ? "text-yellow-400" : "text-red-400")
+  async function savePattern(p: PatternResult) {
+    const key = `${p.sequence}→${p.betOutcome}`
+    if (saved.has(key) || saving) return
+    setSaving(key)
+    try {
+      const strategyType = searchMode === "sequencia" ? "SEQUÊNCIA" : "SOMA"
+      const res = await fetch("/api/user/bacbo/estrategias", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sequence: p.sequence,
+          color: p.betOutcome,
+          strategyType,
+          gameType: "BACBO",
+          platform: "BLAZE",
+        }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setInfoMsg(err.error ?? "Falha ao salvar")
+      } else {
+        setSaved((prev) => new Set([...prev, key]))
+        try {
+          const raw = localStorage.getItem(LS_ACTIVE)
+          const prev: PatternResult[] = raw ? JSON.parse(raw) : []
+          if (!prev.some((s) => `${s.sequence}→${s.betOutcome}` === key)) {
+            localStorage.setItem(LS_ACTIVE, JSON.stringify([...prev, p]))
+          }
+        } catch {
+          /* */
+        }
+      }
+    } catch {
+      setInfoMsg("Erro de rede ao salvar")
+    } finally {
+      setSaving(null)
+    }
+  }
+
+  const hitBg = (rate: number) =>
+    rate >= 0.7 ? "text-green-400" : rate >= 0.55 ? "text-yellow-400" : "text-red-400"
+
+  const MODE_META: Record<SearchMode, { title: string; desc: string; btn: string; accent: string }> = {
+    sequencia: {
+      title: "Padrão de sequência",
+      desc: "Igual ao Double: só a cor/lado (Player, Banker, Empate).",
+      btn: "🎯 Buscar sequências",
+      accent: "border-blue-500/40 bg-blue-500/10 text-blue-300",
+    },
+    soma: {
+      title: "Padrão de soma",
+      desc: "Número + cor, com curingas: ex. 7 azul → qualquer vermelho → qualquer vermelho → entrada no azul.",
+      btn: "🔢 Buscar somas",
+      accent: "border-green-500/40 bg-green-500/10 text-green-300",
+    },
+    empate: {
+      title: "Padrão de empate",
+      desc: "Mesmo modelo da soma (número/cor + curingas), mas a entrada é só no Empate.",
+      btn: "🟡 Buscar empates",
+      accent: "border-yellow-500/40 bg-yellow-500/10 text-yellow-200",
+    },
+  }
+
+  const meta = MODE_META[searchMode]
 
   return (
     <div className="space-y-4">
+      <div className="grid grid-cols-3 gap-2">
+        {(
+          [
+            { id: "sequencia" as const, lab: "Sequência", icon: "🔗" },
+            { id: "soma" as const, lab: "Soma", icon: "🔢" },
+            { id: "empate" as const, lab: "Empate", icon: "🟡" },
+          ] as const
+        ).map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            onClick={() => {
+              setSearchMode(m.id)
+              setInfoMsg("")
+              setPatterns(loadPatternsForMode(m.id))
+              if (m.id === "sequencia") setMinOcc(5)
+              else setMinOcc(3)
+            }}
+            className={`py-2.5 rounded-xl border text-xs font-semibold transition ${
+              searchMode === m.id
+                ? MODE_META[m.id].accent + " ring-1 ring-white/10"
+                : "bg-gray-900 border-gray-800 text-gray-500 hover:text-gray-300"
+            }`}
+          >
+            <span className="mr-1">{m.icon}</span>
+            {m.lab}
+          </button>
+        ))}
+      </div>
+
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
+        <div>
+          <p className="text-sm font-semibold text-white">{meta.title}</p>
+          <p className="text-xs text-gray-500 mt-1 leading-relaxed">{meta.desc}</p>
+        </div>
+
         <div className="grid grid-cols-3 gap-3">
           <div>
             <p className="text-xs text-gray-500 mb-1.5 font-medium">Qtd. de Gales</p>
-            <NumberField min={0} max={10} value={gales} onChange={setGales}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50" />
+            <NumberField
+              min={0}
+              max={10}
+              value={gales}
+              onChange={setGales}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+            />
           </div>
           <div>
             <p className="text-xs text-gray-500 mb-1.5 font-medium">Mín. de ocorrências</p>
-            <NumberField min={1} value={minOcc} onChange={setMinOcc}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50" />
+            <NumberField
+              min={1}
+              value={minOcc}
+              onChange={setMinOcc}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+            />
           </div>
           <div>
-            <p className="text-xs text-gray-500 mb-1.5 font-medium">Pedras na sequência</p>
-            <NumberField min={1} max={5} value={seqLen} onChange={setSeqLen}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50" />
+            <p className="text-xs text-gray-500 mb-1.5 font-medium">Itens na sequência (2–4)</p>
+            <NumberField
+              min={2}
+              max={4}
+              value={seqLen}
+              onChange={(n) => setSeqLen(Math.max(2, Math.min(4, n)))}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+            />
           </div>
         </div>
-        <div className="flex gap-3">
-          <button onClick={() => analyze("normal")} disabled={loading}
-            className="flex-1 bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-black font-bold py-3 rounded-xl text-sm transition-colors">
-            {loading && mode === "normal" ? "Analisando..." : "🎯 Buscar Padrões"}
-          </button>
-          <button onClick={() => analyze("empate")} disabled={loading}
-            className="flex-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white font-bold py-3 rounded-xl text-sm transition-colors border border-gray-600">
-            {loading && mode === "empate" ? "Analisando..." : "🟡 Buscar Empate"}
-          </button>
-        </div>
-        <p className="text-[11px] text-gray-600">
-          Amostra baseada nos últimos {sampleSize || "..."} resultados disponíveis (histórico do provedor é limitado).
-        </p>
+
+        <button
+          onClick={analyze}
+          disabled={loading}
+          className="w-full bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-black font-bold py-3 rounded-xl text-sm transition-colors"
+        >
+          {loading ? "Analisando..." : meta.btn}
+        </button>
+
+        {infoMsg && <p className="text-xs text-yellow-400/90">{infoMsg}</p>}
       </div>
+
+      {searchMode === "empate" && !loading && patterns.length > 0 && (
+        <div className="bg-yellow-500/10 border border-yellow-500/40 rounded-xl p-4 space-y-1">
+          <p className="text-sm font-bold text-white">🟡 Entrada no Empate</p>
+          <p className="text-xs text-gray-300 leading-relaxed">
+            Mesmo modelo da soma (número/cor + “qualquer vermelho/azul”), com aposta só no Empate.
+          </p>
+        </div>
+      )}
 
       {loading && (
         <div className="flex items-center justify-center gap-3 h-24 text-gray-400 text-sm">
           <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-          Catalogando sequências...
-        </div>
-      )}
-
-      {!loading && mode === "empate" && patterns.length > 0 && (
-        <div className="bg-yellow-500/10 border border-yellow-500/40 rounded-xl p-4 space-y-2">
-          <p className="text-sm font-bold text-white">🟡 Atenção: Entrada no Empate</p>
-          <p className="text-xs text-gray-300 leading-relaxed">
-            O Empate é um resultado de baixa frequência — considere usar mais gales pra aumentar as chances de capturar a entrada quando ela ocorrer.
-          </p>
+          Catalogando padrões...
         </div>
       )}
 
       {patterns.length > 0 && (
         <div className="space-y-2">
-          <p className="text-xs text-gray-500 uppercase tracking-wider font-medium">Top {patterns.length} padrões encontrados</p>
-          {patterns.map((p, i) => (
-            <div key={i} className="rounded-xl p-4 border bg-gray-900 border-gray-800 transition-all">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1 flex-wrap mb-2">
-                  {p.sequence.split(",").map((token, j) => {
-                    const base = token.split("_")[0]
-                    const code = base === "PLAYER" ? 1 : base === "BANKER" ? 2 : 0
-                    return (
-                      <span key={j} className={`text-xs font-bold px-2 py-0.5 rounded border ${outcomeBadgeClass(code)}`}>
-                        {OUTCOME_EMOJI[code]} {token.replace("_", " ")}
+          <p className="text-xs text-gray-500 uppercase tracking-wider font-medium">
+            Top {patterns.length} padrões
+          </p>
+          {patterns.map((p, i) => {
+            const key = `${p.sequence}→${p.betOutcome}`
+            const isSaved = saved.has(key)
+            const isSaving = saving === key
+            return (
+              <div
+                key={i}
+                className={`rounded-xl p-4 border transition-all ${
+                  isSaved ? "bg-yellow-500/5 border-yellow-500/30" : "bg-gray-900 border-gray-800"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1 flex-wrap mb-2">
+                      {isSaved && <span className="text-base mr-1">👑</span>}
+                      {p.sequence.split(",").map((token, j) => {
+                        const code = parseTokenSide(token)
+                        return (
+                          <span
+                            key={j}
+                            className={`text-xs font-bold px-2 py-0.5 rounded border ${outcomeBadgeClass(code)}`}
+                            title={token}
+                          >
+                            {OUTCOME_EMOJI[code]}{" "}
+                            {searchMode === "sequencia" ? token : formatSomaTokenLabel(token)}
+                          </span>
+                        )
+                      })}
+                      <span className="text-gray-600 text-xs">→</span>
+                      <span
+                        className={`text-xs font-bold px-2 py-0.5 rounded border ${outcomeBadgeClass(p.betOutcomeNum)}`}
+                      >
+                        {OUTCOME_EMOJI[p.betOutcomeNum]} {p.betOutcome}
                       </span>
-                    )
-                  })}
-                  <span className="text-gray-600 text-xs">→</span>
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded border ${outcomeBadgeClass(p.betOutcomeNum)}`}>
-                    {OUTCOME_EMOJI[p.betOutcomeNum]} {p.betOutcome}
-                  </span>
-                </div>
-                <div className="flex items-center gap-3 text-xs flex-wrap">
-                  <span className={`font-bold text-base ${hitBg(p.hitRate)}`}>{(p.hitRate * 100).toFixed(1)}%</span>
-                  <span className="text-gray-500">{p.occurrences} ocorrências</span>
-                  <span className="text-green-400">{p.wins}× direto</span>
-                  {p.galeWins.map((g, gi) => g > 0 && (
-                    <span key={gi} className="text-yellow-400">{g}× gale{gi + 1}</span>
-                  ))}
-                </div>
-                <div className="mt-2 h-1 bg-gray-800 rounded-full overflow-hidden">
-                  <div className="h-full bg-blue-500 rounded-full" style={{ width: `${p.hitRate * 100}%` }} />
+                    </div>
+                    <div className="flex items-center gap-3 text-xs flex-wrap">
+                      <span className={`font-bold text-base ${hitBg(p.hitRate)}`}>
+                        {(p.hitRate * 100).toFixed(1)}%
+                      </span>
+                      <span className="text-gray-500">{p.occurrences} ocorrências</span>
+                      <span className="text-green-400">{p.wins}× direto</span>
+                      {p.galeWins.map(
+                        (g, gi) =>
+                          g > 0 && (
+                            <span key={gi} className="text-yellow-400">
+                              {g}× gale{gi + 1}
+                            </span>
+                          )
+                      )}
+                    </div>
+                    <div className="mt-2 h-1 bg-gray-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-green-500 rounded-full"
+                        style={{ width: `${p.hitRate * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => savePattern(p)}
+                    disabled={isSaved || !!saving}
+                    className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold transition-all disabled:opacity-60 ${
+                      isSaved
+                        ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30"
+                        : "bg-green-500 hover:bg-green-400 text-black"
+                    }`}
+                  >
+                    {isSaving ? "..." : isSaved ? "👑 Salvo" : "Usar"}
+                  </button>
                 </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
 
       {!loading && patterns.length === 0 && (
-        <p className="text-center text-gray-500 text-sm py-8">Configure os parâmetros e clique em "Buscar Padrões"</p>
+        <p className="text-center text-gray-500 text-sm py-8">
+          {infoMsg || "Configure os parâmetros e clique em buscar."}
+        </p>
       )}
     </div>
   )
@@ -575,80 +674,109 @@ function BuscarPadraoTab() {
 // ═══════════════════════════════════════════════════════════════════════════
 //  PÁGINA PRINCIPAL
 // ═══════════════════════════════════════════════════════════════════════════
-type Tab = "historico" | "sinais" | "buscar"
+type Tab = "historico" | "buscar"
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
-  { id: "historico", label: "Histórico",     icon: "📊" },
-  { id: "sinais",    label: "Sinais com IA", icon: "🤖" },
-  { id: "buscar",    label: "Buscar Padrão", icon: "🔍" },
+  { id: "historico", label: "Histórico", icon: "📊" },
+  { id: "buscar", label: "Buscar Padrão", icon: "🔍" },
 ]
 
 export default function PremiumBacBoPage() {
   const [tab, setTab] = useState<Tab>("historico")
   const [licensed, setLicensed] = useState(true)
   const [checking, setChecking] = useState(true)
+  // Se o bot está em SOMA, a aba Buscar já abre no modelo Soma
+  const [defaultSearchMode, setDefaultSearchMode] = useState<SearchMode>("sequencia")
 
   useEffect(() => {
-    fetch("/api/user/me").then((r) => r.json()).then((data) => {
-      const isPaid = data.paymentStatus === "PAID" && (!data.expireIn || new Date(data.expireIn) > new Date())
-      setLicensed(isPaid || !!data.isTesting || !!data.isAdminAccount)
-      setChecking(false)
-    }).catch(() => setChecking(false))
+    fetch("/api/user/me")
+      .then((r) => r.json())
+      .then((data) => {
+        const isPaid =
+          data.paymentStatus === "PAID" && (!data.expireIn || new Date(data.expireIn) > new Date())
+        setLicensed(isPaid || !!data.isTesting || !!data.isAdminAccount)
+
+        const st = String(data.bacBoSettings?.strategyType ?? data.settings?.strategyType ?? "")
+        if (st === "SOMA") {
+          setDefaultSearchMode("soma")
+          // Cliente com SOMA ativo → já leva pra busca de soma
+          setTab("buscar")
+        } else if (st === "SEQUÊNCIA" || st === "SEQUENCIA") {
+          setDefaultSearchMode("sequencia")
+        }
+
+        // Query ?mode=soma|empate|sequencia
+        try {
+          const q = new URLSearchParams(window.location.search).get("mode")
+          if (q === "soma" || q === "empate" || q === "sequencia") {
+            setDefaultSearchMode(q)
+            setTab("buscar")
+          }
+        } catch {
+          /* */
+        }
+
+        setChecking(false)
+      })
+      .catch(() => setChecking(false))
   }, [])
 
-  if (checking) return (
-    <div className="flex items-center justify-center h-64">
-      <div className="w-6 h-6 border-2 border-gray-600 border-t-blue-400 rounded-full animate-spin" />
-    </div>
-  )
-
-  if (!licensed) return (
-    <div className="flex flex-col items-center justify-center h-64 gap-4 text-center">
-      <div className="text-4xl">🔒</div>
-      <div>
-        <h2 className="text-white font-bold text-lg">Acesso Restrito</h2>
-        <p className="text-gray-400 text-sm mt-1">Você precisa de uma assinatura ativa para acessar o Premium.</p>
+  if (checking) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="w-6 h-6 border-2 border-gray-600 border-t-blue-400 rounded-full animate-spin" />
       </div>
-      <a href="/conta" className="bg-green-500 hover:bg-green-400 text-black font-semibold px-6 py-2.5 rounded-xl text-sm transition-colors">
-        Ver Planos
-      </a>
-    </div>
-  )
+    )
+  }
+
+  if (!licensed) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-4 text-center">
+        <div className="text-4xl">🔒</div>
+        <div>
+          <h2 className="text-white font-bold text-lg">Acesso Restrito</h2>
+          <p className="text-gray-400 text-sm mt-1">
+            Você precisa de uma assinatura ativa para acessar o Premium.
+          </p>
+        </div>
+        <a
+          href="/conta"
+          className="bg-green-500 hover:bg-green-400 text-black font-semibold px-6 py-2.5 rounded-xl text-sm transition-colors"
+        >
+          Ver Planos
+        </a>
+      </div>
+    )
+  }
 
   return (
     <div className="max-w-4xl mx-auto space-y-4">
-      {/* Header */}
       <div className="flex items-center gap-3">
         <span className="text-3xl">🎲</span>
         <div>
           <h1 className="text-xl font-bold text-white">Premium Bac Bo</h1>
-          <p className="text-xs text-gray-500">Análise avançada de Bac Bo — padrões e tendências ao vivo</p>
+          <p className="text-xs text-gray-500">Histórico e busca de padrões (sequência, soma e empate)</p>
         </div>
       </div>
 
-      <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg px-4 py-3 text-xs text-gray-400 leading-relaxed">
-        Análise de padrões e tendências da mesa Bac Bo. As entradas automáticas ficam na aba
-        <strong className="text-gray-300"> Conta → Iniciar Bot</strong> (modo DEMO ou REAL, igual aos outros jogos).
-      </div>
-
-      {/* Sub-tabs */}
       <div className="flex gap-1 bg-gray-900/80 border border-gray-800 rounded-xl p-1">
         {TABS.map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)}
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
             className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold transition-all ${
               tab === t.id ? "bg-white/10 text-white shadow" : "text-gray-500 hover:text-gray-300"
-            }`}>
+            }`}
+          >
             <span>{t.icon}</span>
             <span className="hidden sm:inline">{t.label}</span>
           </button>
         ))}
       </div>
 
-      {/* Content */}
       <div>
         {tab === "historico" && <HistoricoTab />}
-        {tab === "sinais"    && <SinaisIATab />}
-        {tab === "buscar"    && <BuscarPadraoTab />}
+        {tab === "buscar" && <BuscarPadraoTab initialMode={defaultSearchMode} />}
       </div>
     </div>
   )

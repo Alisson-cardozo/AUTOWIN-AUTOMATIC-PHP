@@ -15,6 +15,9 @@ interface BacBoResult  {
   dicebanker1: number
   dicebanker2: number
   winner: string
+  /** Total do vencedor (TipMiner `result` ou soma dos dados) */
+  score?: number
+  result?: number
 }
 interface Strategy     { id: number; sequence: string; color: string }
 
@@ -458,25 +461,29 @@ function BacBoWinnerBadge({ winner, size = "md" }: { winner: string; size?: "sm"
   return <div className={`${sz} ${style} border rounded-lg font-bold whitespace-nowrap`}>{label}</div>
 }
 
-/** Placar da rodada: dados Player vs Banker + vencedor */
+/** Total do vencedor (TipMiner não envia faces dos dados). */
+function bacBoScoreOf(r: BacBoResult): number {
+  if (typeof r.score === "number" && r.score > 0) return r.score
+  if (typeof r.result === "number" && r.result > 0) return r.result
+  if (r.winner === "PlayerWon") return (r.diceplayer1 || 0) + (r.diceplayer2 || 0)
+  if (r.winner === "BankerWon") return (r.dicebanker1 || 0) + (r.dicebanker2 || 0)
+  return (r.diceplayer1 || 0) + (r.diceplayer2 || 0)
+}
+
+/** Chip do histórico: vencedor + total (sem faces dos dados). */
 function BacBoScoreChip({ result }: { result: BacBoResult }) {
   const border =
     result.winner === "PlayerWon"
-      ? "border-blue-500/35 bg-blue-500/10"
+      ? "border-blue-500/35 bg-blue-500/10 text-blue-400"
       : result.winner === "BankerWon"
-      ? "border-red-500/35 bg-red-500/10"
-      : "border-yellow-500/35 bg-yellow-500/10"
+      ? "border-red-500/35 bg-red-500/10 text-red-400"
+      : "border-yellow-500/35 bg-yellow-500/10 text-yellow-300"
+  const label = result.winner === "PlayerWon" ? "P" : result.winner === "BankerWon" ? "B" : "E"
+  const score = bacBoScoreOf(result)
   return (
-    <div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border ${border}`}>
-      <div className="flex gap-0.5">
-        <DiceFace value={result.diceplayer1} size="sm" />
-        <DiceFace value={result.diceplayer2} size="sm" />
-      </div>
-      <span className="text-[9px] text-gray-500 font-semibold">vs</span>
-      <div className="flex gap-0.5">
-        <DiceFace value={result.dicebanker1} size="sm" />
-        <DiceFace value={result.dicebanker2} size="sm" />
-      </div>
+    <div className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border ${border}`}>
+      <span className="text-[10px] font-bold opacity-80">{label}</span>
+      <span className="text-sm font-bold text-white tabular-nums">{score > 0 ? score : "—"}</span>
     </div>
   )
 }
@@ -545,23 +552,18 @@ function LiveBacBoPanel() {
       {current ? (
         <div className={`rounded-xl border border-gray-700 bg-gray-800/40 p-4 flex flex-col items-center gap-3 transition-all duration-300 ${pulse ? "scale-105" : "scale-100"}`}>
           <p className="text-xs font-medium opacity-70 uppercase tracking-widest text-gray-400">Último resultado</p>
-          <div className="flex items-center gap-4">
-            <div className="flex flex-col items-center gap-1">
-              <p className="text-[10px] text-blue-400 uppercase font-semibold">Player</p>
-              <div className="flex gap-1">
-                <DiceFace value={current.diceplayer1} />
-                <DiceFace value={current.diceplayer2} />
-              </div>
-            </div>
-            <span className="text-gray-600 text-xs">vs</span>
-            <div className="flex flex-col items-center gap-1">
-              <p className="text-[10px] text-red-400 uppercase font-semibold">Banker</p>
-              <div className="flex gap-1">
-                <DiceFace value={current.dicebanker1} />
-                <DiceFace value={current.dicebanker2} />
-              </div>
-            </div>
+          <div
+            className={`w-20 h-20 rounded-2xl flex items-center justify-center text-3xl font-black tabular-nums border ${
+              current.winner === "PlayerWon"
+                ? "bg-blue-500/15 border-blue-500/40 text-blue-400"
+                : current.winner === "BankerWon"
+                ? "bg-red-500/15 border-red-500/40 text-red-400"
+                : "bg-yellow-500/15 border-yellow-500/40 text-yellow-300"
+            }`}
+          >
+            {bacBoScoreOf(current) > 0 ? bacBoScoreOf(current) : "—"}
           </div>
+          <p className="text-[11px] text-gray-500">Total do vencedor</p>
           <BacBoWinnerBadge winner={current.winner} />
         </div>
       ) : (
@@ -656,9 +658,24 @@ function SeqBall({ item }: { item: string }) {
   if (item === "PLAYER") return <div className="w-7 h-7 rounded-full bg-blue-500 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">P</div>
   if (item === "BANKER") return <div className="w-7 h-7 rounded-full bg-red-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">B</div>
   if (item === "EMPATE") return <div className="w-7 h-7 rounded-full bg-yellow-400 flex items-center justify-center text-gray-900 text-xs font-bold flex-shrink-0">E</div>
-  // Token da estratégia SOMA (Bac Bo) — 1 rodada completa, os dois lados
-  // juntos — ex: "P16B66" = Player saiu 1 e 6 E Banker saiu 6 e 6. "XX" em
-  // qualquer lado = não importa esse lado.
+  // SOMA nova (TipMiner): lado + total do vencedor — ex: PLAYER_8, BANKER_4, EMPATE_X
+  const scoreSoma = item.match(/^(PLAYER|BANKER|EMPATE|TIE)[_:]?(\d{1,2}|X)$/i)
+  if (scoreSoma) {
+    const side = scoreSoma[1].toUpperCase()
+    const sc = scoreSoma[2].toUpperCase()
+    const bg =
+      side === "PLAYER" ? "bg-blue-500/25 border-blue-500/40 text-blue-300"
+      : side === "BANKER" ? "bg-red-500/25 border-red-500/40 text-red-300"
+      : "bg-yellow-500/25 border-yellow-500/40 text-yellow-200"
+    const lab = side === "PLAYER" ? "P" : side === "BANKER" ? "B" : "E"
+    return (
+      <div className={`h-7 px-2 rounded-full border flex items-center justify-center gap-1 text-[11px] font-bold flex-shrink-0 ${bg}`}>
+        <span>{lab}</span>
+        <span className="text-white tabular-nums">{sc === "X" ? "·" : sc}</span>
+      </div>
+    )
+  }
+  // Legado faces P16B66
   const somaMatch = item.match(/^P(\d\d|XX)B(\d\d|XX)$/)
   if (somaMatch) {
     const [, p, b] = somaMatch
@@ -673,18 +690,11 @@ function SeqBall({ item }: { item: string }) {
   return <div className="w-7 h-7 rounded-full bg-gray-600 flex items-center justify-center text-gray-200 text-xs font-mono flex-shrink-0">{item}</div>
 }
 
-// Token da estratégia SOMA (Bac Bo): 1 rodada completa, com os dois pares
-// de dado (Player e Banker) juntos — ex: "P16B66" = Player saiu 1 e 6 E
-// Banker saiu 6 e 6. `null` num lado vira "XX" (não importa esse lado).
-// Espelha bot/bacbo-source.ts (somaToken) — duplicado aqui porque esse
-// módulo do bot não pode ser importado no cliente (usa Prisma).
-function somaToken(player: [number, number] | null, banker: [number, number] | null): string {
-  const side = (pair: [number, number] | null) => {
-    if (!pair) return "XX"
-    const lo = Math.min(pair[0], pair[1]), hi = Math.max(pair[0], pair[1])
-    return `${lo}${hi}`
-  }
-  return `P${side(player)}B${side(banker)}`
+/** Token SOMA Bac Bo (TipMiner): lado do vencedor + total 2–12 (ou X = qualquer). */
+function scoreSomaToken(side: "PLAYER" | "BANKER" | "EMPATE", score: number | "X"): string {
+  if (score === "X") return `${side}_X`
+  const n = Math.max(2, Math.min(12, Number(score) || 2))
+  return `${side}_${n}`
 }
 
 // ─── Recalculo ao vivo das % dos Padrões Premium salvos ────────────────────
@@ -781,13 +791,11 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
   const [crashTarget, setCrashTarget] = useState("")
   const [crashNumInput, setCrashNumInput] = useState("")
   const [seqItems, setSeqItems] = useState<string[]>([])
-  // SOMA (Bac Bo) — 1 item = 1 rodada completa, os dois lados juntos
-  const [somaPlayerIgnore, setSomaPlayerIgnore] = useState(false)
-  const [somaPlayerDie1, setSomaPlayerDie1] = useState(1)
-  const [somaPlayerDie2, setSomaPlayerDie2] = useState(1)
-  const [somaBankerIgnore, setSomaBankerIgnore] = useState(false)
-  const [somaBankerDie1, setSomaBankerDie1] = useState(1)
-  const [somaBankerDie2, setSomaBankerDie2] = useState(1)
+  // SOMA (Bac Bo / TipMiner) — lado do vencedor + total (2–12)
+  // Ex: PLAYER_4 (4 azul), BANKER_8 (8 vermelho), EMPATE_X
+  const [somaSide, setSomaSide] = useState<"PLAYER" | "BANKER" | "EMPATE">("PLAYER")
+  const [somaScore, setSomaScore] = useState<number | "X">(4)
+  const [somaAnyScore, setSomaAnyScore] = useState(false)
   // HORÁRIOS
   const [startTime, setStartTime] = useState("")
   const [horarioBetColor, setHorarioBetColor] = useState(() => (gameType === "BACBO" ? "PLAYER" : "VERMELHO"))
@@ -1460,86 +1468,75 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
       {strategyType === "SOMA" && isBacBo && (
         <>
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-            <h2 className="text-sm font-semibold text-white mb-3">Nova Combinação</h2>
+            <h2 className="text-sm font-semibold text-white mb-3">Nova Combinação (total + lado)</h2>
             <p className="text-xs text-gray-500 mb-3">
-              Cada item é 1 rodada completa (Player e Banker juntos, já que toda rodada tem os dois). Ex: Player saiu 1+6 e Banker saiu 6+6. Se não ligar pra um dos lados, marque "Não importa".
+              A TipMiner manda o <strong className="text-gray-400">total do vencedor</strong> (2–12) e o lado.
+              Monte a sequência assim: <span className="text-blue-400">4 azul</span> = Player 4,{" "}
+              <span className="text-red-400">8 vermelho</span> = Banker 8,{" "}
+              <span className="text-yellow-300">empate</span>. Depois escolha onde entrar.
             </p>
             <form onSubmit={addStrategy} className="space-y-4">
-              {/* Preview */}
               <div className="min-h-[44px] bg-gray-800 rounded-lg px-3 py-2 flex flex-wrap gap-1.5 items-center">
                 {seqItems.length === 0
-                  ? <span className="text-gray-600 text-xs">Clique em "Adicionar à Sequência" pra montar...</span>
+                  ? <span className="text-gray-600 text-xs">Ex: PLAYER_4 → BANKER_8 · depois aposta em vermelho…</span>
                   : seqItems.map((item, i) => <SeqBall key={i} item={item} />)
                 }
               </div>
 
-              {/* Player */}
-              <div className="bg-gray-800/60 rounded-lg p-3 space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-blue-400">🔵 Player</label>
-                  <label className="flex items-center gap-1.5 text-[11px] text-gray-400 cursor-pointer">
-                    <input type="checkbox" checked={somaPlayerIgnore} onChange={(e) => setSomaPlayerIgnore(e.target.checked)} />
-                    Não importa
-                  </label>
+              {/* Lado do vencedor */}
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-2">Lado (cor) do resultado</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { v: "PLAYER" as const, lab: "🔵 Player", cls: "bg-blue-500/20 border-blue-500/40 text-blue-300" },
+                    { v: "BANKER" as const, lab: "🔴 Banker", cls: "bg-red-500/20 border-red-500/40 text-red-300" },
+                    { v: "EMPATE" as const, lab: "🟡 Empate", cls: "bg-yellow-500/20 border-yellow-500/40 text-yellow-200" },
+                  ]).map((o) => (
+                    <button key={o.v} type="button" onClick={() => setSomaSide(o.v)}
+                      className={`py-2.5 rounded-lg border text-xs font-semibold transition ${
+                        somaSide === o.v ? o.cls + " ring-1 ring-white/20" : "bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600"
+                      }`}>
+                      {o.lab}
+                    </button>
+                  ))}
                 </div>
-                {!somaPlayerIgnore && (
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="grid grid-cols-6 gap-1">
-                      {[1, 2, 3, 4, 5, 6].map((n) => (
-                        <button key={n} type="button" onClick={() => setSomaPlayerDie1(n)}
-                          className={`aspect-square rounded-md text-xs font-bold transition-colors ${somaPlayerDie1 === n ? "bg-blue-500 text-white" : "bg-gray-900 border border-gray-700 text-gray-300 hover:border-gray-600"}`}>
-                          {n}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="grid grid-cols-6 gap-1">
-                      {[1, 2, 3, 4, 5, 6].map((n) => (
-                        <button key={n} type="button" onClick={() => setSomaPlayerDie2(n)}
-                          className={`aspect-square rounded-md text-xs font-bold transition-colors ${somaPlayerDie2 === n ? "bg-blue-500 text-white" : "bg-gray-900 border border-gray-700 text-gray-300 hover:border-gray-600"}`}>
-                          {n}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </div>
 
-              {/* Banker */}
-              <div className="bg-gray-800/60 rounded-lg p-3 space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-red-400">🔴 Banker</label>
+              {/* Total 2–12 */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs font-medium text-gray-400">Total do vencedor (2–12)</label>
                   <label className="flex items-center gap-1.5 text-[11px] text-gray-400 cursor-pointer">
-                    <input type="checkbox" checked={somaBankerIgnore} onChange={(e) => setSomaBankerIgnore(e.target.checked)} />
-                    Não importa
+                    <input type="checkbox" checked={somaAnyScore}
+                      onChange={(e) => {
+                        setSomaAnyScore(e.target.checked)
+                        if (e.target.checked) setSomaScore("X")
+                        else setSomaScore(4)
+                      }} />
+                    Qualquer total
                   </label>
                 </div>
-                {!somaBankerIgnore && (
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="grid grid-cols-6 gap-1">
-                      {[1, 2, 3, 4, 5, 6].map((n) => (
-                        <button key={n} type="button" onClick={() => setSomaBankerDie1(n)}
-                          className={`aspect-square rounded-md text-xs font-bold transition-colors ${somaBankerDie1 === n ? "bg-red-600 text-white" : "bg-gray-900 border border-gray-700 text-gray-300 hover:border-gray-600"}`}>
-                          {n}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="grid grid-cols-6 gap-1">
-                      {[1, 2, 3, 4, 5, 6].map((n) => (
-                        <button key={n} type="button" onClick={() => setSomaBankerDie2(n)}
-                          className={`aspect-square rounded-md text-xs font-bold transition-colors ${somaBankerDie2 === n ? "bg-red-600 text-white" : "bg-gray-900 border border-gray-700 text-gray-300 hover:border-gray-600"}`}>
-                          {n}
-                        </button>
-                      ))}
-                    </div>
+                {!somaAnyScore && (
+                  <div className="grid grid-cols-6 sm:grid-cols-11 gap-1.5">
+                    {[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) => (
+                      <button key={n} type="button" onClick={() => setSomaScore(n)}
+                        className={`aspect-square rounded-md text-xs font-bold transition-colors ${
+                          somaScore === n
+                            ? somaSide === "PLAYER" ? "bg-blue-500 text-white"
+                              : somaSide === "BANKER" ? "bg-red-600 text-white"
+                              : "bg-yellow-500 text-gray-900"
+                            : "bg-gray-900 border border-gray-700 text-gray-300 hover:border-gray-600"
+                        }`}>
+                        {n}
+                      </button>
+                    ))}
                   </div>
                 )}
               </div>
 
               <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => addSeqItem(somaToken(
-                    somaPlayerIgnore ? null : [somaPlayerDie1, somaPlayerDie2],
-                    somaBankerIgnore ? null : [somaBankerDie1, somaBankerDie2]
-                  ))}
+                <button type="button"
+                  onClick={() => addSeqItem(scoreSomaToken(somaSide, somaAnyScore ? "X" : (somaScore === "X" ? 4 : somaScore)))}
                   className="py-2.5 bg-green-500/15 border border-green-500/40 text-green-400 rounded-lg text-xs font-semibold hover:bg-green-500/25 transition">
                   + Adicionar à Sequência
                 </button>
@@ -1550,11 +1547,11 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-gray-400 mb-1">Cor apostada</label>
+                <label className="block text-xs font-medium text-gray-400 mb-1">Entrar em (aposta)</label>
                 <select value={betColor} onChange={(e) => setBetColor(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500 transition">
-                  <option value="PLAYER">🔵 Player</option>
-                  <option value="BANKER">🔴 Banker</option>
+                  <option value="PLAYER">🔵 Player (azul)</option>
+                  <option value="BANKER">🔴 Banker (vermelho)</option>
                   <option value="EMPATE">🟡 Empate</option>
                 </select>
               </div>
@@ -1570,7 +1567,7 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
             <h2 className="text-sm font-semibold text-white mb-3">Combinações Cadastradas ({strategies.length})</h2>
             {strategies.length === 0 ? (
-              <p className="text-gray-500 text-xs">Nenhuma combinação cadastrada.</p>
+              <p className="text-gray-500 text-xs">Nenhuma combinação cadastrada. Ex: PLAYER_4 → aposta BANKER.</p>
             ) : (
               <div className="space-y-2">
                 {strategies.map((s) => (
@@ -1579,7 +1576,7 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
                       <div className="flex gap-1 flex-wrap mb-1">
                         {s.sequence.split(",").map((item, i) => <SeqBall key={i} item={item.trim()} />)}
                       </div>
-                      <p className="text-gray-400 text-xs">Aposta: {colorLabel(s.color, gameType)}</p>
+                      <p className="text-gray-400 text-xs">Entrar em: {colorLabel(s.color, gameType)}</p>
                     </div>
                     <button onClick={() => deleteStrategy(s.id)} className="text-gray-500 hover:text-red-400 transition-colors text-base leading-none ml-3 flex-shrink-0">✕</button>
                   </div>
@@ -2622,6 +2619,8 @@ function IniciaBotTab({ accountType, gameType, onBotStateChange }: { accountType
         countMartingale: 0,
         isGale: false,
         profit: 0,
+        // DEMO: banca volta para R$ 1.000 (Bac Bo e demais jogos)
+        ...(accountType === "DEMO" ? { balance: 1000, firstBalance: 1000 } : {}),
       } : prev)
       await fetchState()
     } catch {
@@ -2915,6 +2914,48 @@ function IniciaBotTab({ accountType, gameType, onBotStateChange }: { accountType
 /* ─────────────────────────────────────────────────────────────
    ABA CONFIG DO BOT
 ───────────────────────────────────────────────────────────── */
+const BACBO_STAKE_OPTIONS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50] as const
+
+function BacBoStakeGrid({
+  value,
+  onChange,
+}: {
+  value: number
+  onChange: (n: number) => void
+}) {
+  const selected = BACBO_STAKE_OPTIONS.includes(Number(value) as (typeof BACBO_STAKE_OPTIONS)[number])
+    ? Number(value)
+    : null
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-5 gap-1.5">
+        {BACBO_STAKE_OPTIONS.map((v) => {
+          const active = selected === v
+          return (
+            <button
+              key={v}
+              type="button"
+              onClick={() => onChange(v)}
+              className={`py-2.5 rounded-lg text-xs font-bold transition-all border ${
+                active
+                  ? "bg-green-500 text-black border-green-400 shadow-lg shadow-green-500/25"
+                  : "bg-gray-900 text-gray-300 border-gray-700/60 hover:border-gray-500 hover:text-white"
+              }`}
+            >
+              R$ {v}
+            </button>
+          )
+        })}
+      </div>
+      {selected == null && Number(value) > 0 && (
+        <p className="text-[11px] text-amber-400/90">
+          Valor atual R$ {Number(value).toFixed(2)} — escolha um botão acima para atualizar.
+        </p>
+      )}
+    </div>
+  )
+}
+
 function ConfigBotTab({ gameType }: { gameType: string }) {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [saving, setSaving] = useState(false)
@@ -2925,11 +2966,19 @@ function ConfigBotTab({ gameType }: { gameType: string }) {
   const [collapsedGale, setCollapsedGale] = useState(true)
   const [collapsedAvançado, setCollapsedAvançado] = useState(true)
 
-  const configUrl = gameType === "BACBO" ? "/api/user/bacbo/configuracoes" : "/api/user/configuracoes"
+  const isBacBo = gameType === "BACBO"
+  const configUrl = isBacBo ? "/api/user/bacbo/configuracoes" : "/api/user/configuracoes"
 
   useEffect(() => {
-    fetch(configUrl).then((r) => r.json()).then(setSettings)
-  }, [configUrl])
+    fetch(configUrl).then((r) => r.json()).then((data) => {
+      if (isBacBo && data && typeof data === "object") {
+        // Bac Bo só trabalha com valor fixo (chips da mesa)
+        setSettings({ ...data, enterType: "VALOR" })
+      } else {
+        setSettings(data)
+      }
+    })
+  }, [configUrl, isBacBo])
 
   function update<K extends keyof Settings>(key: K, value: Settings[K]) {
     setSettings((prev) => prev ? { ...prev, [key]: value } : null)
@@ -2939,10 +2988,11 @@ function ConfigBotTab({ gameType }: { gameType: string }) {
     if (!settings) return
     setSaving(true)
     setSuccess("")
+    const payload = isBacBo ? { ...settings, enterType: "VALOR" } : settings
     await fetch(configUrl, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(settings),
+      body: JSON.stringify(payload),
     })
     setSaving(false)
     setSuccess("Salvo!")
@@ -2988,20 +3038,34 @@ function ConfigBotTab({ gameType }: { gameType: string }) {
         <SectionHeader icon="💰" title="Entrada" collapsed={collapsedEntrada} onToggle={() => setCollapsedEntrada(!collapsedEntrada)} />
         {!collapsedEntrada && (
           <div className="mt-3">
-            <div className="flex gap-1 bg-gray-900 rounded-lg p-1 mb-3">
-              <Pill label="VALOR FIXO" active={settings.enterType === "VALOR"} onClick={() => update("enterType", "VALOR")} />
-              <Pill label="PORCENTAGEM" active={settings.enterType === "PORCENTAGEM"} onClick={() => update("enterType", "PORCENTAGEM")} />
-            </div>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-green-400 text-xs font-bold select-none">
-                {settings.enterType === "PORCENTAGEM" ? "%" : "R$"}
-              </span>
-              <NumberField step="0.01" min={settings.enterType === "PORCENTAGEM" ? undefined : gameType === "BACBO" ? "2.50" : "0.10"}
-                value={settings.enterType === "PORCENTAGEM" ? settings.enterPercent : settings.enterValue}
-                onChange={(n) => update(settings.enterType === "PORCENTAGEM" ? "enterPercent" : "enterValue", n)}
-                className={`${inp} pl-9`} />
-            </div>
-            {gameType === "BACBO" && <p className="text-xs text-gray-600 mt-1.5">Aposta mínima típica da mesa: R$ 2,50 (algumas salas R$ 5,00)</p>}
+            {isBacBo ? (
+              <>
+                <p className="text-xs text-gray-500 mb-2 font-medium">Escolha o valor de entrada</p>
+                <BacBoStakeGrid
+                  value={Number(settings.enterValue) || 0}
+                  onChange={(n) => {
+                    update("enterType", "VALOR")
+                    update("enterValue", n)
+                  }}
+                />
+              </>
+            ) : (
+              <>
+                <div className="flex gap-1 bg-gray-900 rounded-lg p-1 mb-3">
+                  <Pill label="VALOR FIXO" active={settings.enterType === "VALOR"} onClick={() => update("enterType", "VALOR")} />
+                  <Pill label="PORCENTAGEM" active={settings.enterType === "PORCENTAGEM"} onClick={() => update("enterType", "PORCENTAGEM")} />
+                </div>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-green-400 text-xs font-bold select-none">
+                    {settings.enterType === "PORCENTAGEM" ? "%" : "R$"}
+                  </span>
+                  <NumberField step="0.01" min={settings.enterType === "PORCENTAGEM" ? undefined : "0.10"}
+                    value={settings.enterType === "PORCENTAGEM" ? settings.enterPercent : settings.enterValue}
+                    onChange={(n) => update(settings.enterType === "PORCENTAGEM" ? "enterPercent" : "enterValue", n)}
+                    className={`${inp} pl-9`} />
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -3119,12 +3183,10 @@ function ConfigBotTab({ gameType }: { gameType: string }) {
               <div className="mt-2 space-y-3">
                 <div>
                   <p className="text-xs text-gray-500 mb-1.5 font-medium">Valor da Proteção (R$)</p>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400 text-xs font-bold select-none">R$</span>
-                    <NumberField step="0.01" min="5" value={settings.protectionValue}
-                      onChange={(n) => update("protectionValue", n)}
-                      className={`${inp} pl-9`} />
-                  </div>
+                  <BacBoStakeGrid
+                    value={Number(settings.protectionValue) || 0}
+                    onChange={(n) => update("protectionValue", n)}
+                  />
                 </div>
                 <div>
                   <p className="text-xs text-gray-500 mb-1.5 font-medium">Multiplicador Empate</p>
@@ -3158,15 +3220,22 @@ function ConfigBotTab({ gameType }: { gameType: string }) {
                   <p className="text-xs text-gray-500 mb-1.5 font-medium">
                     Valor de Entrada ({gameType === "FORTUNE" ? "Amarelo" : gameType === "BACBO" ? "Empate" : "Branco"})
                   </p>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-green-400 text-xs font-bold select-none">
-                      R$
-                    </span>
-                    <NumberField step="0.01" min={gameType === "BACBO" ? "2.50" : "0.10"}
-                      value={settings.whiteEntryValue}
+                  {gameType === "BACBO" ? (
+                    <BacBoStakeGrid
+                      value={Number(settings.whiteEntryValue) || 0}
                       onChange={(n) => update("whiteEntryValue", n)}
-                      className={`${inp} pl-9`} />
-                  </div>
+                    />
+                  ) : (
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-green-400 text-xs font-bold select-none">
+                        R$
+                      </span>
+                      <NumberField step="0.01" min="0.10"
+                        value={settings.whiteEntryValue}
+                        onChange={(n) => update("whiteEntryValue", n)}
+                        className={`${inp} pl-9`} />
+                    </div>
+                  )}
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>

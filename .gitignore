@@ -12,10 +12,16 @@
 !/storage/logs/.gitkeep
 /storage/bacbo-evo/*
 !/storage/bacbo-evo/.gitkeep
+/storage/bacbo-ws/*
+!/storage/bacbo-ws/.gitkeep
 /storage/telegram-pending/*
 !/storage/telegram-pending/.gitkeep
 /storage/bot-worker.pid
 /storage/*.pid
+
+# Local dumps / junk
+/public.zip
+/getMessage()
 
 # Public generated
 /public/qrcodes/*

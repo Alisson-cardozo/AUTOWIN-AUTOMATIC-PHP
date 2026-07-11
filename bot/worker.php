@@ -13,6 +13,7 @@ require dirname(__DIR__) . '/vendor/autoload.php';
 
 use App\Bootstrap;
 use App\Bot\EngineManager;
+use App\Services\BacBoWsFeed;
 
 Bootstrap::init();
 
@@ -32,6 +33,14 @@ register_shutdown_function(static function () use ($pidFile): void {
 echo '[' . date('H:i:s') . "] AutoWin bot worker iniciado (pid=" . getmypid() . ")\n";
 log_msg('worker started pid=' . getmypid(), 'bot');
 
+// Feed WS Bac Bo (resultados da mesa Evolution — substitui bacbominer)
+try {
+    BacBoWsFeed::ensureRunning();
+    echo '[' . date('H:i:s') . "] Bac Bo WS feed solicitado\n";
+} catch (Throwable $e) {
+    echo 'Aviso bacbo-ws-feed: ' . $e->getMessage() . "\n";
+}
+
 // evita que um fatal mate tudo sem log
 set_exception_handler(function (Throwable $e) {
     log_msg('UNCAUGHT: ' . $e->getMessage() . "\n" . $e->getTraceAsString(), 'bot');
@@ -46,6 +55,7 @@ try {
 }
 
 $lastCmd = 0;
+$lastFeedCheck = 0;
 while (true) {
     // renova pid (caso outro processo sobrescreva)
     @file_put_contents($pidFile, (string) getmypid());
@@ -57,6 +67,14 @@ while (true) {
             EngineManager::processCommands();
         } catch (Throwable $e) {
             log_msg('commands: ' . $e->getMessage(), 'bot');
+        }
+    }
+    // re-sobe o feed WS se morrer (a cada ~15s)
+    if ($now - $lastFeedCheck >= 15) {
+        $lastFeedCheck = $now;
+        try {
+            BacBoWsFeed::ensureRunning();
+        } catch (Throwable) {
         }
     }
     try {

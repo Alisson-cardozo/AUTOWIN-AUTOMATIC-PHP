@@ -86,7 +86,14 @@ final class UserRepository
             ]);
         }
         if (!Database::fetch('SELECT id FROM bacbo_variables WHERE ownerId = ?', [$userId])) {
-            Database::insert('bacbo_variables', ['ownerId' => $userId]);
+            Database::insert('bacbo_variables', [
+                'ownerId' => $userId,
+                'balance' => 1000,
+                'firstBalance' => 1000,
+                'monthStartBalance' => 1000,
+                'firstBalanceDate' => now(),
+                'monthStartDate' => now(),
+            ]);
         }
     }
 

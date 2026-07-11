@@ -12,8 +12,8 @@ use App\Services\HttpClient;
 
 final class GameController
 {
-    private const BACBO_MAX_RESULTS = 100;
-    private const BACBO_STALE_THRESHOLD_MS = 60000;
+    private const BACBO_MAX_RESULTS = 200;
+    private const BACBO_STALE_THRESHOLD_MS = 120000;
 
 
     private function client(): HttpClient
@@ -198,7 +198,9 @@ final class GameController
     {
         Auth::requireUserId();
 
+        // Fonte: TipMiner → bacbominer → DB
         $apiResults = BacBoSource::fetchSource();
+        $source = BacBoSource::$lastSource ?? 'unknown';
 
         if ($apiResults) {
             try {
@@ -207,8 +209,13 @@ final class GameController
                 log_msg('[bacbo/recent] erro ao persistir: ' . $e->getMessage(), 'bot');
             }
 
-            $newestAgeMs = (microtime(true) * 1000) - (strtotime((string) $apiResults[0]['created_at']) * 1000);
-            $stale = $newestAgeMs > self::BACBO_STALE_THRESHOLD_MS;
+            $created = (string) ($apiResults[0]['created_at'] ?? '');
+            $newestTs = $created !== '' ? strtotime($created) : false;
+            $newestAgeMs = $newestTs
+                ? (microtime(true) * 1000) - ($newestTs * 1000)
+                : self::BACBO_STALE_THRESHOLD_MS + 1;
+            // tipminer / bacbominer fresco = Online; só DB antigo = Offline
+            $stale = $source === 'db' || $newestAgeMs > self::BACBO_STALE_THRESHOLD_MS;
 
             $sliced = array_slice($apiResults, 0, self::BACBO_MAX_RESULTS);
             json_response([
@@ -220,32 +227,18 @@ final class GameController
                     'dicebanker1' => $r['dicebanker1'],
                     'dicebanker2' => $r['dicebanker2'],
                     'winner' => $r['winner'],
+                    // Total do vencedor (TipMiner `result` ou soma dos dados)
+                    'score' => (int) ($r['score'] ?? 0),
+                    'result' => (int) ($r['score'] ?? 0),
                 ], $sliced),
                 'total' => min(count($apiResults), self::BACBO_MAX_RESULTS),
                 'apiDown' => $stale,
+                'source' => $source,
             ]);
         }
 
-        log_msg('[bacbo/recent] fonte indisponível, servindo último estado salvo', 'bot');
-        try {
-            $rows = Database::fetchAll('SELECT * FROM bacbo_results ORDER BY id DESC LIMIT ' . self::BACBO_MAX_RESULTS);
-            json_response([
-                'results' => array_map(static fn (array $r) => [
-                    'id' => (string) $r['id'],
-                    'created_at' => (string) $r['createdAt'],
-                    'diceplayer1' => (int) $r['player1'],
-                    'diceplayer2' => (int) $r['player2'],
-                    'dicebanker1' => (int) $r['banker1'],
-                    'dicebanker2' => (int) $r['banker2'],
-                    'winner' => $r['winner'],
-                ], $rows),
-                'total' => count($rows),
-                'apiDown' => true,
-            ]);
-        } catch (\Throwable $e) {
-            log_msg('[bacbo/recent] erro ao buscar banco: ' . $e->getMessage(), 'bot');
-            json_response(['results' => [], 'total' => 0, 'apiDown' => true]);
-        }
+        log_msg('[bacbo/recent] nenhuma fonte disponível', 'bot');
+        json_response(['results' => [], 'total' => 0, 'apiDown' => true, 'source' => $source]);
     }
 
     public function roletasRecent(): void

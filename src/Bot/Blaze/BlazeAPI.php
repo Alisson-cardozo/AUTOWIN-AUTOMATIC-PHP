@@ -171,16 +171,33 @@ final class BlazeAPI
     }
 
     /**
-     * Abre sessão Bac Bo (Evolution) — POST /api/games/bac-bo/play
-     * Retorno costuma trazer URL de launch (entry/JSESSIONID/EVOSESSIONID).
+     * Abre sessão Bac Bo (Evolution).
+     * Tenta bac-bo-ao-vivo (mesa ao vivo / Python) e depois bac-bo.
+     * Retorno costuma trazer URL de launch (entry/JSESSIONID → EVOSESSIONID via redirect).
      *
      * @return array<string,mixed>
      */
     public function playBacBo(string $currencyType = 'BRL'): array
     {
-        return $this->client->post('/api/games/bac-bo/play', [
-            'selected_currency_type' => $currencyType,
-        ]);
+        $body = ['selected_currency_type' => $currencyType];
+        // Sala real do portal: /pt/games/bac-bo → BacBo00000000001
+        $paths = [
+            '/api/games/bac-bo/play',
+            '/api/games/bac-bo-ao-vivo/play',
+        ];
+        $last = [];
+        foreach ($paths as $path) {
+            try {
+                $res = $this->client->post($path, $body);
+                if (is_array($res) && self::extractBacBoLaunchUrl($res) !== null) {
+                    return $res;
+                }
+                $last = is_array($res) ? $res : ['raw' => $res];
+            } catch (\Throwable $e) {
+                $last = ['error' => $e->getMessage(), 'path' => $path];
+            }
+        }
+        return is_array($last) ? $last : [];
     }
 
     /**

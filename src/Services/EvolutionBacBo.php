@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace App\Services;
 
 /**
- * Bridge multi-usuário para Bac Bo (Evolution).
- * Cada chamada é isolada por userId — sessão em storage/bacbo-evo/{userId}.json
- * e processo Node sem estado compartilhado entre usuários.
+ * Bridge multi-usuário para Bac Bo (Evolution) — HTTP + WebSocket (sem Chrome).
+ * Cada userId: Blaze token → /play → entry redirect → EVOSESSIONID → WS aposta.
+ * Sessão em storage/bacbo-evo/{userId}.json (isolada por usuário).
  */
 final class EvolutionBacBo
 {
@@ -124,7 +124,9 @@ final class EvolutionBacBo
     }
 
     /**
-     * Coloca aposta REAL na mesa (espera AcceptingBets se necessário).
+     * Coloca aposta REAL na mesa.
+     * Espera a PRÓXIMA janela AcceptingBets (não a rodada que a API já adiantou).
+     * Timeout maior: TipMiner costuma sair antes da mesa Evolution.
      *
      * @param  'PLAYER'|'BANKER'|'EMPATE'  $spot
      * @return array<string, mixed>
@@ -145,7 +147,8 @@ final class EvolutionBacBo
             'spot' => strtoupper($spot),
             'amount' => $amount,
             'protectionAmount' => $protectionAmount,
-            'timeoutMs' => 45000,
+            // TipMiner adiantar resultado → espera fechar rodada + abrir AcceptingBets
+            'timeoutMs' => 90000,
         ]);
     }
 

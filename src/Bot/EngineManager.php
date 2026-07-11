@@ -45,12 +45,13 @@ final class EngineManager
         $engine = match ($game) {
             'CRASH' => new CrashEngine($userId, $api, $isDemo, 'BLAZE', $forceReset),
             'FORTUNE' => new FortuneEngine($userId, $api, $isDemo, 'BLAZE', $forceReset),
-            // Bac Bo REAL só com token Blaze + conta REAL; senão DEMO isolado por userId
+            // Bac Bo: isDemo só pelo accountType do usuário.
+            // Token ausente NÃO vira DEMO automaticamente (evita flip REAL↔DEMO no painel).
             'BACBO' => new BacBoEngine(
                 $userId,
                 $forceReset,
                 $api,
-                $isDemo || empty($user['token'])
+                $isDemo
             ),
             default => new DoubleEngine($userId, $api, $isDemo, 'BLAZE', $forceReset),
         };

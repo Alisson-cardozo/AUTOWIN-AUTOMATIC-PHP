@@ -17,6 +17,7 @@
     "esbuild": "^0.28.1"
   },
   "dependencies": {
+    "puppeteer-core": "^25.3.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "telegram": "^2.26.22",

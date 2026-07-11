@@ -17,6 +17,18 @@ final class Database
             return self::$pdo;
         }
 
+        return self::connect();
+    }
+
+    /** Força nova conexão (ex.: após MySQL server has gone away no worker). */
+    public static function reconnect(): PDO
+    {
+        self::$pdo = null;
+        return self::connect();
+    }
+
+    private static function connect(): PDO
+    {
         $host = env('DB_HOST', '127.0.0.1');
         $port = env('DB_PORT', '3306');
         $db = env('DB_DATABASE', 'autowin');
@@ -33,11 +45,31 @@ final class Database
         return self::$pdo;
     }
 
+    private static function isGoneAway(\Throwable $e): bool
+    {
+        $msg = $e->getMessage();
+        return str_contains($msg, 'server has gone away')
+            || str_contains($msg, 'Lost connection')
+            || str_contains($msg, 'Error while sending')
+            || (int) $e->getCode() === 2006
+            || (int) $e->getCode() === 2013;
+    }
+
     public static function query(string $sql, array $params = []): PDOStatement
     {
-        $stmt = self::pdo()->prepare($sql);
-        $stmt->execute($params);
-        return $stmt;
+        try {
+            $stmt = self::pdo()->prepare($sql);
+            $stmt->execute($params);
+            return $stmt;
+        } catch (\Throwable $e) {
+            if (!self::isGoneAway($e)) {
+                throw $e;
+            }
+            // Worker longo: reconecta 1x e repete
+            $stmt = self::reconnect()->prepare($sql);
+            $stmt->execute($params);
+            return $stmt;
+        }
     }
 
     public static function fetch(string $sql, array $params = []): ?array

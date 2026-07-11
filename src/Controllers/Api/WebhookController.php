@@ -129,11 +129,10 @@ final class WebhookController
         $d3 = $diceValue($dice, 3);
         $d4 = $diceValue($dice, 4);
 
+        // Evolution Bac Bo: maior SOMA dos 2 dados (2–12). NÃO é bacará (% 10).
         $playerTotal = $d1 + $d2;
         $bankerTotal = $d3 + $d4;
-        $pScore = $playerTotal % 10;
-        $bScore = $bankerTotal % 10;
-        $winner = $pScore > $bScore ? 'PlayerWon' : ($bScore > $pScore ? 'BankerWon' : 'Tie');
+        $winner = \App\Bot\Games\BacBoSource::winnerFromDice($d1, $d2, $d3, $d4);
 
         $externalId = (string) $game['id'];
         $existing = Database::fetch('SELECT id FROM bacbo_results WHERE externalId = ?', [$externalId]);

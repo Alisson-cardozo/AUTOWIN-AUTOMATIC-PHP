@@ -182,7 +182,11 @@ final class AuthController
             )),
             'strategies' => $user['strategies'] ?? [],
             'bacBoSettings' => $normalizeSettings(is_array($user['bacBoSettings'] ?? null) ? $user['bacBoSettings'] : null),
-            'bacBoVariables' => $normalizeVars(is_array($user['bacBoVariables'] ?? null) ? $user['bacBoVariables'] : null),
+            // Bac Bo DEMO usa a mesma banca virtual R$ 1000 (não misturar com lixo de sessão)
+            'bacBoVariables' => $normalizeVars($this->demoSafeVariables(
+                is_array($user['bacBoVariables'] ?? null) ? $user['bacBoVariables'] : null,
+                (string) ($user['accountType'] ?? 'DEMO')
+            )),
             'jonbetSettings' => $normalizeSettings(is_array($user['jonbetSettings'] ?? null) ? $user['jonbetSettings'] : null),
             'jonbetVariables' => $normalizeVars($this->demoSafeVariables(
                 is_array($user['jonbetVariables'] ?? null) ? $user['jonbetVariables'] : null,
@@ -204,11 +208,28 @@ final class AuthController
             return $vars;
         }
         if (!$vars) {
-            return ['balance' => 1000.0, 'profit' => 0.0, 'firstBalance' => 1000.0, 'firstBalanceMode' => 'DEMO'];
+            return [
+                'balance' => 1000.0,
+                'profit' => 0.0,
+                'firstBalance' => 1000.0,
+                'firstBalanceMode' => 'DEMO',
+                'countWin' => 0,
+                'countLoss' => 0,
+            ];
         }
         $mode = (string) ($vars['firstBalanceMode'] ?? '');
         $bal = (float) ($vars['balance'] ?? 0);
-        if ($mode !== 'DEMO' || $bal <= 0) {
+        $fb = (float) ($vars['firstBalance'] ?? 0);
+        $wins = (int) ($vars['countWin'] ?? 0);
+        $losses = (int) ($vars['countLoss'] ?? 0);
+        $profit = (float) ($vars['profit'] ?? 0);
+
+        // Resíduo de conta REAL, saldo inválido, ou reset incompleto (0 win/loss e banca ≠ 1000)
+        $fromReal = $mode !== '' && $mode !== 'DEMO';
+        $invalid = $bal <= 0 || $fb <= 0;
+        $dirtyIdle = $wins === 0 && $losses === 0 && abs($profit) < 0.001 && abs($bal - 1000.0) > 0.01;
+
+        if ($fromReal || $invalid || $dirtyIdle) {
             $vars['balance'] = 1000.0;
             $vars['firstBalance'] = 1000.0;
             $vars['profit'] = 0.0;

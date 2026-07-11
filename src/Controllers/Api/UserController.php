@@ -58,9 +58,39 @@ final class UserController
             $uid = (int) $user['id'];
             // Zera painel da sessão (vitórias/derrotas/lucro) — relatório do mês fica na tela inicial
             if ($isBacBo) {
-                \App\Bot\BotEntryLogger::resetSessionCounters('bacbo_variables', $uid);
+                // DEMO Bac Bo: banca virtual sempre reinicia em R$ 1.000
+                $demoBal = $isDemo ? 1000.0 : null;
+                \App\Bot\BotEntryLogger::resetSessionCounters('bacbo_variables', $uid, $demoBal);
+                if ($isDemo) {
+                    try {
+                        Database::update('bacbo_variables', [
+                            'balance' => 1000,
+                            'firstBalance' => 1000,
+                            'profit' => 0,
+                            'countWin' => 0,
+                            'countLoss' => 0,
+                            'countMartingale' => 0,
+                            'isGale' => 0,
+                            'firstBalanceDate' => now(),
+                        ], 'ownerId = :oid', ['oid' => $uid]);
+                    } catch (\Throwable) {
+                    }
+                }
             } else {
-                \App\Bot\BotEntryLogger::resetSessionCounters('variables', $uid);
+                $demoBal = $isDemo ? 1000.0 : null;
+                \App\Bot\BotEntryLogger::resetSessionCounters('variables', $uid, $demoBal);
+                if ($isDemo) {
+                    try {
+                        Database::update('variables', [
+                            'balance' => 1000,
+                            'firstBalance' => 1000,
+                            'profit' => 0,
+                            'firstBalanceMode' => 'DEMO',
+                            'firstBalanceDate' => now(),
+                        ], 'ownerId = :oid', ['oid' => $uid]);
+                    } catch (\Throwable) {
+                    }
+                }
             }
             // Histórico visual da sessão limpa ao iniciar (WIN/LOSS já foram pro relatório mensal)
             BotCommandService::clearHistory($uid, 'BLAZE');
@@ -466,18 +496,25 @@ final class UserController
             }
             // DEMO = banca virtual R$ 1000 (não misturar com saldo real da Blaze)
             if (isset($data['accountType']) && $data['accountType'] === 'DEMO') {
+                $demoReset = [
+                    'balance' => 1000,
+                    'firstBalance' => 1000,
+                    'profit' => 0,
+                    'countWin' => 0,
+                    'countLoss' => 0,
+                    'countMartingale' => 0,
+                    'isGale' => 0,
+                    'firstBalanceDate' => now(),
+                ];
                 try {
-                    Database::update('variables', [
-                        'balance' => 1000,
-                        'firstBalance' => 1000,
-                        'profit' => 0,
-                        'countWin' => 0,
-                        'countLoss' => 0,
-                        'countMartingale' => 0,
-                        'isGale' => 0,
+                    Database::update('variables', array_merge($demoReset, [
                         'firstBalanceMode' => 'DEMO',
-                        'firstBalanceDate' => now(),
-                    ], 'ownerId = :oid', ['oid' => $uid]);
+                    ]), 'ownerId = :oid', ['oid' => $uid]);
+                } catch (\Throwable) {
+                }
+                // Bac Bo tem tabela própria de variáveis
+                try {
+                    Database::update('bacbo_variables', $demoReset, 'ownerId = :oid', ['oid' => $uid]);
                 } catch (\Throwable) {
                 }
             }
@@ -585,22 +622,33 @@ final class UserController
     public function balance(): void
     {
         $user = Auth::requireUser();
-        $vars = is_array($user['variables'] ?? null) ? $user['variables'] : [];
         $accountType = (string) ($user['accountType'] ?? 'DEMO');
+        $gameType = (string) ($user['gameType'] ?? 'DOUBLE');
+        $isBacBo = $gameType === 'BACBO';
+        // Bac Bo tem tabela própria — não misturar com variables do Double
+        $varsTable = $isBacBo ? 'bacbo_variables' : 'variables';
+        $vars = $isBacBo
+            ? (is_array($user['bacBoVariables'] ?? null) ? $user['bacBoVariables'] : [])
+            : (is_array($user['variables'] ?? null) ? $user['variables'] : []);
+        $uid = (int) $user['id'];
 
         // DEMO: nunca puxa carteira real; garante banca virtual
         if ($accountType === 'DEMO') {
             $bal = (float) ($vars['balance'] ?? 0);
             $mode = (string) ($vars['firstBalanceMode'] ?? '');
-            if ($mode !== 'DEMO' || $bal <= 0) {
+            // bacbo_variables pode não ter firstBalanceMode — usa balance <= 0
+            if (($mode !== '' && $mode !== 'DEMO') || $bal <= 0) {
                 $bal = 1000.0;
                 try {
-                    Database::update('variables', [
+                    $payload = [
                         'balance' => 1000,
                         'firstBalance' => 1000,
-                        'firstBalanceMode' => 'DEMO',
                         'profit' => 0,
-                    ], 'ownerId = :oid', ['oid' => (int) $user['id']]);
+                    ];
+                    if (!$isBacBo) {
+                        $payload['firstBalanceMode'] = 'DEMO';
+                    }
+                    Database::update($varsTable, $payload, 'ownerId = :oid', ['oid' => $uid]);
                 } catch (\Throwable) {
                 }
             }
@@ -616,7 +664,7 @@ final class UserController
                 'isActive' => (bool) $user['isActive'],
                 'isBetting' => (bool) $user['isBetting'],
                 'accountType' => $accountType,
-                'gameType' => $user['gameType'],
+                'gameType' => $gameType,
                 'live' => false,
             ]);
         }
@@ -628,7 +676,11 @@ final class UserController
                 $api->setToken((string) $user['token']);
                 $wallet = $api->getWallet();
                 $bal = $api->extractBalance($wallet);
-                Database::update('variables', ['balance' => $bal], 'ownerId = :oid', ['oid' => (int) $user['id']]);
+                Database::update($varsTable, ['balance' => $bal], 'ownerId = :oid', ['oid' => $uid]);
+                // também espelha em variables (Double) se não for Bac Bo only
+                if (!$isBacBo) {
+                    // already updated variables
+                }
                 json_response([
                     'balance' => $bal,
                     'profit' => (float) ($vars['profit'] ?? 0),
@@ -641,7 +693,7 @@ final class UserController
                     'isActive' => (bool) $user['isActive'],
                     'isBetting' => (bool) $user['isBetting'],
                     'accountType' => $accountType,
-                    'gameType' => $user['gameType'],
+                    'gameType' => $gameType,
                     'live' => true,
                 ]);
             } catch (\Throwable) {
@@ -661,7 +713,7 @@ final class UserController
             'isActive' => (bool) $user['isActive'],
             'isBetting' => (bool) $user['isBetting'],
             'accountType' => $accountType,
-            'gameType' => $user['gameType'],
+            'gameType' => $gameType,
             'live' => false,
         ]);
     }

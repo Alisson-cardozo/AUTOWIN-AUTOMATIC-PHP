@@ -20,7 +20,7 @@
     ]
   },
   "scripts": {
-    "serve": "php -S localhost:8080 -t public public/router-dev.php",
+    "serve": "php -S 127.0.0.1:8000 -t public public/router-dev.php",
     "bot": "php bot/worker.php",
     "migrate": "php database/migrate.php"
   }

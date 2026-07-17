@@ -1,0 +1,82 @@
+=== status ===
+{"state":"connected","pid":33660,"updatedAt":"2026-07-14T01:32:22.681Z","tableId":"mrbras531mrbr532","lastOpenAt":"2026-07-14T01:30:23.213Z","lastResultAt":"2026-07-14T01:32:03.905Z","lastResult":{"id":"15956500321","created_at":"2026-07-14T01:32:03.903Z","roll":26,"color":"PRETO"},"lastCloseCode":1006,"lastCloseReason":"","lastError":"GC hash inválido/expirado (type 3). Abra gamblingcounting, copie o wss://.../ws?hash=... novo e salve em MEGAROULETTE_GC_WS_URL.","sourcePref":"auto","slug":"mega-roulette---brazilian-287-287","gcGameKey":"8-287","source":"pragmatic-ws","gameKey":"8-287","code":"GC_HASH_INVALID","heartbeatAt":"2026-07-14T01:32:22.681Z"}
+=== history top 20 ===
+updatedAt 2026-07-14T01:32:03.904Z source pragmatic-ws n 300
+26	PRETO	15956500321	2026-07-14T01:32:03.903Z
+25	VERMELHO	15956497921	2026-07-14T01:31:20.803Z
+36	VERMELHO	15956495521	2026-07-14T01:30:39.765Z
+13	PRETO	15956490321	2026-07-14T01:29:18.414Z
+24	PRETO	15956487821	2026-07-14T01:28:35.925Z
+31	PRETO	15956485021	2026-07-14T01:27:54.212Z
+8	PRETO	15956477421	2026-07-14T01:25:50.705Z
+21	VERMELHO	15956475121	2026-07-14T01:25:08.940Z
+15	PRETO	15956472421	2026-07-14T01:24:26.788Z
+18	VERMELHO	15956464521	2026-07-14T01:22:20.204Z
+28	PRETO	15956461921	2026-07-14T01:21:37.922Z
+3	VERMELHO	15956459021	2026-07-14T01:20:56.428Z
+3	VERMELHO	15956453821	2026-07-14T01:19:28.896Z
+1	VERMELHO	15956451221	2026-07-14T01:18:46.546Z
+29	PRETO	15956448621	2026-07-14T01:18:05.046Z
+22	PRETO	15956443321	2026-07-14T01:16:39.533Z
+11	PRETO	15956440821	2026-07-14T01:15:56.722Z
+11	PRETO	15956438321	2026-07-14T01:15:14.497Z
+8	PRETO	15956432621	2026-07-14T01:13:50.829Z
+10	PRETO	15956430321	2026-07-14T01:13:07.901Z
+ROLLS 26 25 36 13 24 31 8 21 15 18 28 3 3 1 29 22 11 11 8 10 7 34 8 31 0 30 12 24 23 23
+=== db top 20 ===
+26	PRETO	15956500321	2026-07-13 22:32:03
+25	VERMELHO	15956497921	2026-07-13 22:31:20
+36	VERMELHO	15956495521	2026-07-13 22:30:39
+13	PRETO	15956490321	2026-07-13 22:29:18
+24	PRETO	15956487821	2026-07-13 22:28:35
+31	PRETO	15956485021	2026-07-13 22:27:54
+8	PRETO	15956477421	2026-07-13 22:25:50
+21	VERMELHO	15956475121	2026-07-13 22:25:08
+15	PRETO	15956472421	2026-07-13 22:24:26
+18	VERMELHO	15956464521	2026-07-13 22:22:20
+28	PRETO	15956461921	2026-07-13 22:21:37
+3	VERMELHO	15956459021	2026-07-13 22:20:56
+3	VERMELHO	15956453821	2026-07-13 22:19:28
+1	VERMELHO	15956451221	2026-07-13 22:18:46
+29	PRETO	15956448621	2026-07-13 22:18:05
+22	PRETO	15956443321	2026-07-13 22:16:39
+11	PRETO	15956440821	2026-07-13 22:15:56
+11	PRETO	15956438321	2026-07-13 22:15:14
+8	PRETO	15956432621	2026-07-13 22:13:50
+10	PRETO	15956430321	2026-07-13 22:13:07
+DB_ROLLS 26 25 36 13 24 31 8 21 15 18 28 3 3 1 29 22 11 11 8 10
+=== feed ===
+root       33660  0.0  1.3 1224128 53168 ?       Sl   01:27   0:00 /usr/bin/node /var/www/autowin/bot/megaroulette-ws-feed.cjs
+=== log tail ===
+[megaroulette-ws-feed] Pragmatic WS aberto — ouvindo resultados
+[megaroulette-ws-feed] +1 resultado: 15 PRETO (id=15956472421)
+[megaroulette-ws-feed] +1 resultado: 21 VERMELHO (id=15956475121)
+[megaroulette-ws-feed] +1 resultado: 8 PRETO (id=15956477421)
+[megaroulette-ws-feed] WS fechou code=1006 
+[megaroulette-ws-feed] sessão encerrou (close) — reconectando em 1200ms
+[megaroulette-ws-feed] Blaze play OK slug=mega-roulette---brazilian-287-287
+[megaroulette-ws-feed] Pragmatic mesa=mrbras531mrbr532 slug=mega-roulette---brazilian-287-287
+[megaroulette-ws-feed] Pragmatic WS aberto — ouvindo resultados
+[megaroulette-ws-feed] iniciado pid=33660 pref=auto slug=mega-roulette---brazilian-287-287 gcKey=8-287
+[megaroulette-ws-feed] modo GamblingCounting (Brazilian Mega Roulette 8-287)
+[megaroulette-ws-feed] GC conectando wss://squid-app-67gkf.ondigitalocean.app/ws?hash=***
+[megaroulette-ws-feed] GC WS aberto — aguardando liveGame
+[megaroulette-ws-feed] GC hash inválido/expirado (type 3). Abra gamblingcounting, copie o wss://.../ws?hash=... novo e salve em MEGAROULETTE_GC_WS_URL.
+[megaroulette-ws-feed] GC hash morto — fallback Blaze/Pragmatic Brazilian
+[megaroulette-ws-feed] GC WS close 1005 
+[megaroulette-ws-feed] Blaze play OK slug=mega-roulette---brazilian-287-287
+[megaroulette-ws-feed] Pragmatic mesa=mrbras531mrbr532 slug=mega-roulette---brazilian-287-287
+[megaroulette-ws-feed] Pragmatic WS aberto — ouvindo resultados
+[megaroulette-ws-feed] +1 resultado: 31 PRETO (id=15956485021)
+[megaroulette-ws-feed] +1 resultado: 24 PRETO (id=15956487821)
+[megaroulette-ws-feed] +1 resultado: 13 PRETO (id=15956490321)
+[megaroulette-ws-feed] WS fechou code=1006 
+[megaroulette-ws-feed] sessão encerrou (close) — reconectando em 1200ms
+[megaroulette-ws-feed] Blaze play OK slug=mega-roulette---brazilian-287-287
+[megaroulette-ws-feed] Pragmatic mesa=mrbras531mrbr532 slug=mega-roulette---brazilian-287-287
+[megaroulette-ws-feed] Pragmatic WS aberto — ouvindo resultados
+[megaroulette-ws-feed] +1 resultado: 36 VERMELHO (id=15956495521)
+[megaroulette-ws-feed] +1 resultado: 25 VERMELHO (id=15956497921)
+[megaroulette-ws-feed] +1 resultado: 26 PRETO (id=15956500321)
+
+STDERR

@@ -33,11 +33,21 @@ final class BotWorker
         @mkdir(dirname($log), 0777, true);
 
         if (PHP_OS_FAMILY === 'Windows') {
+            if (!function_exists('popen')) {
+                log_msg('[worker] popen() indisponível — configure um cron rodando bot/worker.php', 'bot');
+                return;
+            }
             // start /B em background sem bloquear o request
             $cmd = 'start /B "" ' . escapeshellarg($php) . ' ' . escapeshellarg($script)
                 . ' >> ' . escapeshellarg($log) . ' 2>&1';
             pclose(popen($cmd, 'r'));
         } else {
+            if (!function_exists('exec')) {
+                // Comum em hospedagem compartilhada (exec desabilitado). O worker precisa
+                // rodar via cron do painel de hospedagem: "php bot/worker.php" periodicamente.
+                log_msg('[worker] exec() indisponível — configure um cron rodando bot/worker.php', 'bot');
+                return;
+            }
             $cmd = escapeshellarg($php) . ' ' . escapeshellarg($script)
                 . ' >> ' . escapeshellarg($log) . ' 2>&1 & echo $!';
             $out = [];

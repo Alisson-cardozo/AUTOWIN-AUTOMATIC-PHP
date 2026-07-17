@@ -11,7 +11,6 @@ interface Strategy {
 
 const TYPES_DOUBLE  = ["SEQUÊNCIA", "HORÁRIOS", "NÚMEROS", "COPIAR SALA DE SINAL"]
 const TYPES_FORTUNE = ["SEQUÊNCIA", "HORÁRIOS"]
-const TYPES_CRASH   = ["SEQUÊNCIA", "HORÁRIOS", "NÚMEROS", "COPIAR SALA DE SINAL"]
 
 const DOUBLE_COLORS = [
   { value: "vermelho", label: "🔴 Vermelho" },
@@ -161,370 +160,6 @@ function DoubleSequenceSection({
           Sequências Cadastradas ({strategies.length})
         </h3>
         <StrategyList strategies={strategies} onDelete={onDelete} seqLabel="Aposta" />
-      </div>
-    </div>
-  )
-}
-
-/* ---------- SEQUÊNCIA — Crash (V/R/X) ---------- */
-const CRASH_BALLS = [
-  { key: "V", label: "🟢 ≥2x",  title: "Verde — crash ≥ 2.00x" },
-  { key: "R", label: "🔴 <2x",  title: "Vermelho — crash < 2.00x" },
-  { key: "X", label: "✖️ Any",  title: "Qualquer resultado" },
-]
-
-function crashSeqLabel(item: string) {
-  if (item === "V") return "🟢"
-  if (item === "R") return "🔴"
-  if (item === "X") return "✖️"
-  return item
-}
-
-function CrashSequenceSection({
-  strategies,
-  onAdd,
-  onDelete,
-}: {
-  strategies: Strategy[]
-  onAdd: (seq: string, color: string) => Promise<void>
-  onDelete: (id: number) => void
-}) {
-  const [items, setItems] = useState<string[]>([])
-  const [target, setTarget] = useState("")
-  const [adding, setAdding] = useState(false)
-  const [error, setError] = useState("")
-
-  function addItem(key: string) { setItems((p) => [...p, key]) }
-  function removeLastItem() { setItems((p) => p.slice(0, -1)) }
-
-  async function handleAdd(e: React.FormEvent) {
-    e.preventDefault()
-    if (items.length === 0) { setError("Adicione ao menos um item à sequência."); return }
-    const t = parseFloat(target)
-    if (isNaN(t) || t < 1.01) { setError("Alvo inválido. Ex: 2.00"); return }
-    setError("")
-    setAdding(true)
-    try {
-      await onAdd(items.join(","), String(t.toFixed(2)))
-      setItems([])
-      setTarget("")
-    } catch { setError("Erro ao adicionar sequência.") }
-    finally { setAdding(false) }
-  }
-
-  return (
-    <div className="space-y-5">
-      <div className="bg-gray-800/50 border border-gray-700/50 rounded-lg p-4 text-sm text-gray-400 space-y-1">
-        <p>Monte a sequência de resultados e defina o alvo. O bot aposta quando o histórico bater.</p>
-        <p><span className="text-green-400 font-mono">🟢 V</span> = crash ≥ 2x · <span className="text-red-400 font-mono">🔴 R</span> = crash &lt; 2x · <span className="text-gray-300 font-mono">✖ X</span> = qualquer</p>
-        <p className="text-xs">Ordem: da esquerda (mais antigo) para direita (mais recente).</p>
-      </div>
-
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-white mb-4">Nova Sequência</h3>
-        <form onSubmit={handleAdd} className="space-y-4">
-          {/* Botões V / R / X */}
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-2">Adicionar à sequência</label>
-            <div className="flex gap-2">
-              {CRASH_BALLS.map((b) => (
-                <button key={b.key} type="button" title={b.title}
-                  onClick={() => addItem(b.key)}
-                  className="flex-1 bg-gray-800 hover:bg-gray-700 border border-gray-700 hover:border-gray-500 text-white font-semibold py-2 rounded-lg transition-colors text-sm">
-                  {b.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Preview da sequência */}
-          <div className="min-h-[2.5rem] bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 flex items-center gap-1.5 flex-wrap">
-            {items.length === 0
-              ? <span className="text-gray-600 text-xs">sequência vazia — clique nos botões acima</span>
-              : items.map((it, i) => (
-                <span key={i} className="bg-gray-700 rounded px-2 py-0.5 text-sm font-mono text-white">{crashSeqLabel(it)}</span>
-              ))
-            }
-            {items.length > 0 && (
-              <button type="button" onClick={removeLastItem}
-                className="ml-auto text-gray-500 hover:text-red-400 text-xs transition-colors">
-                ← apagar
-              </button>
-            )}
-          </div>
-
-          {/* Alvo */}
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1.5">
-              Alvo da aposta <span className="text-gray-600">(ex: 2.00)</span>
-            </label>
-            <input
-              type="number" inputMode="decimal" onFocus={(e) => e.target.select()} min="1.01" step="0.01"
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-              required
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500 transition text-sm"
-              placeholder="2.00"
-            />
-          </div>
-
-          {error && <p className="text-red-400 text-xs">{error}</p>}
-          <button type="submit" disabled={adding}
-            className="w-full bg-green-500 hover:bg-green-400 disabled:bg-green-500/50 text-black font-semibold py-2.5 rounded-lg transition-colors text-sm">
-            {adding ? "Adicionando..." : "Adicionar Sequência"}
-          </button>
-        </form>
-      </div>
-
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-white mb-4">Sequências Cadastradas ({strategies.length})</h3>
-        {strategies.length === 0
-          ? <p className="text-gray-500 text-sm">Nenhuma sequência cadastrada.</p>
-          : <div className="space-y-2">
-              {strategies.map((s) => (
-                <div key={s.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-4 py-3">
-                  <div>
-                    <p className="text-white text-sm font-medium font-mono flex gap-1">
-                      {s.sequence.split(",").map((it, i) => (
-                        <span key={i} className="bg-gray-700 rounded px-1.5 py-0.5 text-xs">{crashSeqLabel(it.trim().toUpperCase())}</span>
-                      ))}
-                    </p>
-                    <p className="text-gray-400 text-xs mt-1">Alvo: {s.color}x</p>
-                  </div>
-                  <button onClick={() => onDelete(s.id)} className="text-gray-500 hover:text-red-400 transition-colors text-lg leading-none">✕</button>
-                </div>
-              ))}
-            </div>
-        }
-      </div>
-    </div>
-  )
-}
-
-/* ---------- HORÁRIOS — Crash ---------- */
-function CrashHorariosSection({
-  strategies,
-  onAdd,
-  onDelete,
-}: {
-  strategies: Strategy[]
-  onAdd: (seq: string, color: string) => Promise<void>
-  onDelete: (id: number) => void
-}) {
-  const [time, setTime] = useState("")
-  const [target, setTarget] = useState("")
-  const [adding, setAdding] = useState(false)
-  const [error, setError] = useState("")
-
-  async function handleAdd(e: React.FormEvent) {
-    e.preventDefault()
-    const hhmm = time.trim()
-    const t = parseFloat(target)
-    if (!/^\d{2}:\d{2}$/.test(hhmm)) { setError("Horário inválido. Use HH:MM (ex: 19:57)"); return }
-    if (isNaN(t) || t < 1.01) { setError("Alvo inválido. Ex: 2.00"); return }
-    setError("")
-    setAdding(true)
-    try { await onAdd(hhmm, String(t.toFixed(2))); setTime(""); setTarget("") }
-    catch { setError("Erro ao adicionar horário.") }
-    finally { setAdding(false) }
-  }
-
-  return (
-    <div className="space-y-5">
-      <div className="bg-gray-800/50 border border-gray-700/50 rounded-lg p-4 text-sm text-gray-400 space-y-1">
-        <p>Configure horários específicos e o alvo de crash para cada momento. O bot aposta automaticamente no minuto configurado.</p>
-        <p className="text-xs">Horário no fuso de Brasília (UTC-3). Ex: <span className="text-white font-mono">19:57 → 2.00x</span></p>
-      </div>
-
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-white mb-4">Novo Horário</h3>
-        <form onSubmit={handleAdd} className="space-y-3">
-          <div className="flex gap-3">
-            <div className="flex-1">
-              <label className="block text-xs font-medium text-gray-400 mb-1.5">Horário <span className="text-gray-600">(HH:MM)</span></label>
-              <input type="text" value={time} onChange={(e) => setTime(e.target.value)} placeholder="19:57" maxLength={5}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500 text-sm" />
-            </div>
-            <div className="flex-1">
-              <label className="block text-xs font-medium text-gray-400 mb-1.5">Alvo <span className="text-gray-600">(ex: 2.00)</span></label>
-              <input type="number" inputMode="decimal" onFocus={(e) => e.target.select()} min="1.01" step="0.01" value={target} onChange={(e) => setTarget(e.target.value)} placeholder="2.00"
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500 text-sm" />
-            </div>
-          </div>
-          {error && <p className="text-red-400 text-xs">{error}</p>}
-          <button type="submit" disabled={adding}
-            className="w-full bg-green-500 hover:bg-green-400 disabled:bg-green-500/50 text-black font-semibold py-2.5 rounded-lg transition-colors text-sm">
-            {adding ? "Adicionando..." : "Adicionar Horário"}
-          </button>
-        </form>
-      </div>
-
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-white mb-4">Horários Cadastrados ({strategies.length})</h3>
-        {strategies.length === 0
-          ? <p className="text-gray-500 text-sm">Nenhum horário cadastrado.</p>
-          : <div className="space-y-2">
-              {strategies.map((s) => (
-                <div key={s.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-4 py-3">
-                  <div>
-                    <p className="text-white text-sm font-semibold font-mono">{s.sequence}</p>
-                    <p className="text-gray-400 text-xs mt-0.5">Alvo: {s.color}x</p>
-                  </div>
-                  <button onClick={() => onDelete(s.id)} className="text-gray-500 hover:text-red-400 transition-colors text-lg leading-none">✕</button>
-                </div>
-              ))}
-            </div>
-        }
-      </div>
-    </div>
-  )
-}
-
-/* ---------- NÚMEROS — Crash ---------- */
-function CrashNumerosSection({
-  strategies,
-  onAdd,
-  onDelete,
-}: {
-  strategies: Strategy[]
-  onAdd: (seq: string, color: string) => Promise<void>
-  onDelete: (id: number) => void
-}) {
-  const [items, setItems] = useState<string[]>([])
-  const [numInput, setNumInput] = useState("")
-  const [target, setTarget] = useState("")
-  const [adding, setAdding] = useState(false)
-  const [error, setError] = useState("")
-
-  function addItem(key: string) { setItems((p) => [...p, key]) }
-  function removeLastItem() { setItems((p) => p.slice(0, -1)) }
-
-  function addNumItem() {
-    const v = parseFloat(numInput)
-    if (!isNaN(v) && v >= 1.01) { addItem(String(v.toFixed(2))); setNumInput("") }
-  }
-
-  async function handleAdd(e: React.FormEvent) {
-    e.preventDefault()
-    if (items.length === 0) { setError("Adicione ao menos um item."); return }
-    const t = parseFloat(target)
-    if (isNaN(t) || t < 1.01) { setError("Alvo inválido. Ex: 2.00"); return }
-    setError("")
-    setAdding(true)
-    try {
-      await onAdd(items.join(","), String(t.toFixed(2)))
-      setItems([])
-      setTarget("")
-      setNumInput("")
-    } catch { setError("Erro ao adicionar.") }
-    finally { setAdding(false) }
-  }
-
-  function renderItem(item: string, i: number) {
-    const v = item.trim().toUpperCase()
-    if (v === "V" || v === "R" || v === "X") {
-      return <span key={i} className={`inline-flex w-7 h-7 rounded-full items-center justify-center text-xs font-bold ${v === "V" ? "bg-green-500 text-white" : v === "R" ? "bg-red-500 text-white" : "bg-gray-600 text-gray-200"}`}>{v}</span>
-    }
-    return <span key={i} className="h-7 px-2 inline-flex items-center rounded-full bg-blue-600 text-white text-xs font-bold font-mono">{item}x</span>
-  }
-
-  return (
-    <div className="space-y-5">
-      <div className="bg-gray-800/50 border border-gray-700/50 rounded-lg p-4 text-sm text-gray-400 space-y-1">
-        <p>Combine pontos específicos do Crash com V/R/X para criar sequências mais precisas.</p>
-        <p className="text-xs"><span className="text-green-400 font-mono">V</span> ≥2x · <span className="text-red-400 font-mono">R</span> &lt;2x · <span className="text-gray-300 font-mono">X</span> qualquer · <span className="text-blue-300 font-mono">1.50</span> crash bateu em ≤ 1.50x</p>
-      </div>
-
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-white mb-4">Nova Estratégia</h3>
-        <form onSubmit={handleAdd} className="space-y-4">
-          {/* Preview */}
-          <div className="min-h-[2.5rem] bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 flex items-center gap-1.5 flex-wrap">
-            {items.length === 0
-              ? <span className="text-gray-600 text-xs">sequência vazia</span>
-              : items.map((it, i) => renderItem(it, i))
-            }
-            {items.length > 0 && (
-              <button type="button" onClick={removeLastItem} className="ml-auto text-gray-500 hover:text-red-400 text-xs transition-colors">← apagar</button>
-            )}
-          </div>
-
-          {/* Crash point buttons */}
-          <div>
-            <p className="text-xs text-gray-500 mb-2">Crash points <span className="text-gray-600">(≤ valor)</span></p>
-            <div className="flex flex-wrap gap-1.5">
-              {["1.10","1.20","1.30","1.50","1.80","2.00","3.00","5.00","10.00"].map((n) => (
-                <button key={n} type="button" onClick={() => addItem(n)}
-                  className="h-9 px-3 rounded-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold font-mono transition hover:scale-105">
-                  {n}x
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Custom number input */}
-          <div className="flex gap-2">
-            <input type="number" inputMode="decimal" onFocus={(e) => e.target.select()} min="1.01" step="0.01" value={numInput} onChange={(e) => setNumInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addNumItem())}
-              placeholder="Outro valor (ex: 1.75)"
-              className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            <button type="button" onClick={addNumItem}
-              className="bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold px-4 rounded-lg transition">
-              + Adicionar
-            </button>
-          </div>
-
-          {/* V / R / X */}
-          <div className="grid grid-cols-4 gap-2">
-            {[["V","≥2x","bg-green-500/20 border-green-500/40 text-green-400","bg-green-500"],
-              ["R","<2x","bg-red-600/20 border-red-500/40 text-red-400","bg-red-500"],
-              ["X","Any","bg-gray-600/20 border-gray-500/40 text-gray-400","bg-gray-600/60 border border-gray-500"]
-            ].map(([key, lbl, cls, ballCls]) => (
-              <button key={key} type="button" onClick={() => addItem(key)}
-                className={`flex flex-col items-center justify-center gap-1 py-2.5 border rounded-lg text-xs font-medium hover:opacity-80 transition ${cls}`}>
-                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-white font-bold text-xs ${ballCls}`}>{key}</div>
-                {lbl}
-              </button>
-            ))}
-            <button type="button" onClick={removeLastItem} disabled={items.length === 0}
-              className="flex flex-col items-center justify-center gap-1 py-2.5 bg-orange-500/10 border border-orange-500/30 text-orange-400 rounded-lg text-xs font-medium hover:bg-orange-500/20 disabled:opacity-30 transition">
-              <div className="w-6 h-6 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-400 font-bold text-sm">←</div>
-              Apagar
-            </button>
-          </div>
-
-          {/* Alvo */}
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1.5">Alvo da aposta <span className="text-gray-600">(ex: 2.00)</span></label>
-            <input type="number" inputMode="decimal" onFocus={(e) => e.target.select()} min="1.01" step="0.01" value={target} onChange={(e) => setTarget(e.target.value)} required placeholder="2.00"
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500" />
-          </div>
-          {error && <p className="text-red-400 text-xs">{error}</p>}
-          <button type="submit" disabled={adding}
-            className="w-full bg-green-500 hover:bg-green-400 disabled:bg-green-500/50 text-black font-semibold py-2.5 rounded-lg transition-colors text-sm">
-            {adding ? "Adicionando..." : "Adicionar Estratégia"}
-          </button>
-        </form>
-      </div>
-
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-white mb-4">Estratégias Cadastradas ({strategies.length})</h3>
-        {strategies.length === 0
-          ? <p className="text-gray-500 text-sm">Nenhuma estratégia cadastrada.</p>
-          : <div className="space-y-2">
-              {strategies.map((s) => (
-                <div key={s.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-4 py-3">
-                  <div>
-                    <div className="flex gap-1.5 flex-wrap mb-1">
-                      {s.sequence.split(",").map((it, i) => renderItem(it, i))}
-                    </div>
-                    <p className="text-gray-400 text-xs">Alvo: {s.color}x</p>
-                  </div>
-                  <button onClick={() => onDelete(s.id)} className="text-gray-500 hover:text-red-400 transition-colors text-lg leading-none">✕</button>
-                </div>
-              ))}
-            </div>
-        }
       </div>
     </div>
   )
@@ -1032,7 +667,7 @@ export default function EstrategiasPage() {
       const settings = await fetch("/api/user/configuracoes").then((r) => r.json())
       const st: string = settings.strategyType ?? "SEQUÊNCIA"
       
-      const allTypes = gt === "CRASH" ? TYPES_CRASH : gt === "FORTUNE" ? TYPES_FORTUNE : TYPES_DOUBLE
+      const allTypes = gt === "FORTUNE" ? TYPES_FORTUNE : TYPES_DOUBLE
       const validTypes = allTypes.filter(t => !hidden.map((s: string) => s.toUpperCase()).includes(t.toUpperCase()))
       
       const resolved = validTypes.includes(st) ? st : (validTypes[0] ?? "SEQUÊNCIA")
@@ -1073,11 +708,9 @@ export default function EstrategiasPage() {
 
   if (loading || !gameType) return <div className="text-gray-400">Carregando...</div>
 
-  const rawAvailableTypes = gameType === "CRASH"
-    ? TYPES_CRASH
-    : gameType === "FORTUNE"
-      ? TYPES_FORTUNE
-      : TYPES_DOUBLE
+  const rawAvailableTypes = gameType === "FORTUNE"
+    ? TYPES_FORTUNE
+    : TYPES_DOUBLE
 
   const availableTypes = rawAvailableTypes.filter(
     (t) => !hiddenStrategies.map((s: string) => s.toUpperCase()).includes(t.toUpperCase())
@@ -1085,22 +718,17 @@ export default function EstrategiasPage() {
 
   function renderDynamic() {
     if (strategyType === "SEQUÊNCIA") {
-      return gameType === "CRASH"
-        ? <CrashSequenceSection strategies={strategies} onAdd={addStrategy} onDelete={deleteStrategy} />
-        : <DoubleSequenceSection strategies={strategies} onAdd={addStrategy} onDelete={deleteStrategy} />
+      return <DoubleSequenceSection strategies={strategies} onAdd={addStrategy} onDelete={deleteStrategy} />
     }
     if (strategyType === "HORÁRIOS") {
-      if (gameType === "CRASH")   return <CrashHorariosSection   strategies={strategies} onAdd={addStrategy} onDelete={deleteStrategy} />
       if (gameType === "FORTUNE") return <FortuneHorariosSection strategies={strategies} onAdd={addStrategy} onDelete={deleteStrategy} />
       return <DoubleHorariosSection strategies={strategies} onAdd={addStrategy} onDelete={deleteStrategy} />
     }
     if (strategyType === "NÚMEROS") {
-      return gameType === "CRASH"
-        ? <CrashNumerosSection strategies={strategies} onAdd={addStrategy} onDelete={deleteStrategy} />
-        : <InfoCard
-            title="Números"
-            description="Estratégia baseada em números específicos do Double (1–14). O bot aposta quando determinados números ou faixas de números são identificados no histórico. A configuração de números será disponibilizada em breve."
-          />
+      return <InfoCard
+          title="Números"
+          description="Estratégia baseada em números específicos do Double (1–14). O bot aposta quando determinados números ou faixas de números são identificados no histórico. A configuração de números será disponibilizada em breve."
+        />
     }
     if (strategyType === "COPIAR SALA DE SINAL") {
       return <CopiarSalaSection />
@@ -1114,7 +742,6 @@ export default function EstrategiasPage() {
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold text-white">Estratégias</h1>
           <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${
-            gameType === "CRASH"   ? "bg-blue-500/20 text-blue-400 border-blue-500/30" :
             gameType === "FORTUNE" ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" :
                                      "bg-red-500/20 text-red-400 border-red-500/30"
           }`}>

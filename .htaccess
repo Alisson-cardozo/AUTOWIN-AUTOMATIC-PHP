@@ -1,0 +1,15 @@
+# AutoWin — se o document root do hosting for a RAIZ do projeto
+# (comum na Hostinger). Redireciona tudo para /public.
+#
+# Preferível: no painel, aponte o domínio para a pasta "public".
+# Este arquivo é fallback.
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Já está em /public — não reescreve de novo
+    RewriteRule ^public/ - [L]
+
+    # Manda tudo para public/
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>

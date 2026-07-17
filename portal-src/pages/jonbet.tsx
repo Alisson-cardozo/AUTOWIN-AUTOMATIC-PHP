@@ -283,7 +283,7 @@ function LiveGamePanel({ gameType }: { gameType: string }) {
   return (
     <>
       <div className={gameType === "DOUBLE"  ? "" : "hidden"}><LiveDoublePanel /></div>
-      <div className={gameType === "CRASH"   ? "" : "hidden"}><LiveCrashPanel /></div>
+
       <div className={gameType === "FORTUNE" ? "" : "hidden"}><LiveFortunePanel /></div>
     </>
   )
@@ -306,6 +306,7 @@ function ContaJonbetTab({
   const [name, setName]               = useState("")
   const [balance, setBalance]         = useState<number | null>(null)
   const [saving, setSaving]           = useState(false)
+  const [hiddenGames, setHiddenGames] = useState<string[]>([])
 
   useEffect(() => {
     if (hasJonbetToken) return
@@ -316,6 +317,16 @@ function ContaJonbetTab({
       }
     }).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    fetch("/api/user/me", { cache: "no-store" }).then((r) => r.json()).then((data) => {
+      const hidden = typeof data.hiddenGamesContaJonbet === "string"
+        ? data.hiddenGamesContaJonbet.split(",").map((g: string) => g.trim()).filter(Boolean)
+        : []
+      if (!hidden.includes("CRASH")) hidden.push("CRASH")
+      setHiddenGames(hidden)
+    }).catch(() => {})
   }, [])
 
   // Atualiza saldo ao vivo na aba Conta Jonbet (igual a Blaze)
@@ -348,12 +359,12 @@ function ContaJonbetTab({
   }
 
   function toggleGameType() {
-    const next = jonbetGameType === "DOUBLE" ? "CRASH" : jonbetGameType === "CRASH" ? "FORTUNE" : "DOUBLE"
+    const next = jonbetGameType === "DOUBLE" ? "FORTUNE" : "DOUBLE"
     saveToggle("jonbetGameType", next)
     window.location.reload()
   }
 
-  function handleSelectGame(selected: "DOUBLE" | "CRASH" | "FORTUNE") {
+  function handleSelectGame(selected: "DOUBLE" | "FORTUNE") {
     saveToggle("jonbetGameType", selected)
     window.location.reload()
   }
@@ -441,7 +452,7 @@ function ContaJonbetTab({
 
         <div className="space-y-3">
           <p className="text-white text-sm font-medium">Selecione o Jogo Ativo</p>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {[
               {
                 key: "DOUBLE",
@@ -453,15 +464,6 @@ function ContaJonbetTab({
                 labelColor: "text-red-400"
               },
               {
-                key: "CRASH",
-                label: "Crash",
-                icon: "🚀",
-                selectedStyle: "border-blue-500 shadow-lg shadow-blue-500/20 bg-blue-500/5 scale-[1.02]",
-                overlayColor: "from-blue-600/30",
-                glowColor: "bg-blue-500/20 text-blue-400 border-blue-500/30",
-                labelColor: "text-blue-400"
-              },
-              {
                 key: "FORTUNE",
                 label: "Fortune Double",
                 icon: "🍀",
@@ -470,7 +472,7 @@ function ContaJonbetTab({
                 glowColor: "bg-yellow-400/20 text-yellow-400 border-yellow-400/30",
                 labelColor: "text-yellow-400"
               }
-            ].map((g) => {
+            ].filter((g) => !hiddenGames.includes(g.key)).map((g) => {
               const isSelected = jonbetGameType === g.key
               const imgPath = `/imagem-jogos/jonbet/${g.key.toLowerCase()}.png`
               return (
@@ -595,6 +597,13 @@ const TYPES_DOUBLE  = ["SEQUÊNCIA", "HORÁRIOS", "NÚMEROS", "COPIAR SALA DE SI
 const TYPES_CRASH   = ["SEQUÊNCIA", "HORÁRIOS", "NÚMEROS", "COPIAR SALA DE SINAL"]
 const TYPES_FORTUNE = ["SEQUÊNCIA", "HORÁRIOS"]
 
+// Padrão de Número (Premium) tem pelo menos um token numérico (roll exato)
+// misturado com cor curinga — usado pra separar dos padrões de Sequência
+// (só cor) no painel "Padrões Premium Selecionados".
+function isNumeroPattern(sequence: string): boolean {
+  return sequence.split(",").some(t => /^\d+$/.test(t))
+}
+
 function colorLabel(c: string, gt?: string) {
   if (gt === "FORTUNE") {
     if (c === "VERMELHO") return "❤️ Vermelho"
@@ -648,11 +657,13 @@ function recomputeFortunePattern(sorted: FortuneResult[], sequence: string, betC
 function recomputeDoublePattern(sorted: DoubleResult[], sequence: string, betColor: string, gales: number) {
   const seqColors = sequence.split(",")
   const seqLen = seqColors.length
+  const matchesToken = (token: string, r: DoubleResult) =>
+    /^\d+$/.test(token) ? r.roll === parseInt(token, 10) : LIVE_COLOR_NAME[r.color] === token
   let occurrences = 0, wins = 0
   const galeWins = new Array(gales).fill(0)
   for (let i = seqLen; i < sorted.length - gales; i++) {
-    const seq = sorted.slice(i - seqLen, i).map(r => LIVE_COLOR_NAME[r.color]).join(",")
-    if (seq !== sequence) continue
+    const window = sorted.slice(i - seqLen, i)
+    if (!window.every((r, j) => matchesToken(seqColors[j], r))) continue
     occurrences++
     const nextColor = LIVE_COLOR_NAME[sorted[i].color]
     if (nextColor === betColor) {
@@ -1283,25 +1294,30 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
           )}
 
           {/* Premium double patterns */}
-          {isDouble && premiumDoublePatterns.length > 0 && (
+          {isDouble && premiumDoublePatterns.filter((p: any) => isNumeroPattern(p.sequence) === (strategyType === "NÚMEROS")).length > 0 && (
             <div className="space-y-2">
               <div className="flex items-center justify-between px-1">
                 <p className="text-yellow-400 text-xs font-bold uppercase tracking-wide">👑 Padrões Premium Selecionados</p>
-                <button onClick={() => { try { localStorage.removeItem("jonbet_premium_double_active_patterns") } catch {} setPremiumDoublePatterns([]) }}
+                <button onClick={() => {
+                  const remaining = premiumDoublePatterns.filter((p: any) => isNumeroPattern(p.sequence) !== (strategyType === "NÚMEROS"))
+                  try { localStorage.setItem("jonbet_premium_double_active_patterns", JSON.stringify(remaining)) } catch {}
+                  setPremiumDoublePatterns(remaining)
+                }}
                   className="text-gray-600 hover:text-red-400 text-xs transition-colors">Limpar todos</button>
               </div>
-              {premiumDoublePatterns.map((p: any, i: number) => (
+              {premiumDoublePatterns.filter((p: any) => isNumeroPattern(p.sequence) === (strategyType === "NÚMEROS")).map((p: any, i: number) => (
                 <div key={i} className="bg-yellow-500/5 border border-yellow-500/30 rounded-xl p-3">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1 flex-wrap">
-                        {p.sequence.split(",").map((c: string, j: number) => (
-                          <span key={j} className={`text-xs font-bold px-1.5 py-0.5 rounded ${
-                            c === "VERMELHO" ? "bg-green-400/30 text-green-300" :
-                            c === "PRETO"    ? "bg-gray-700 text-gray-300" :
-                                              "bg-white/10 text-gray-200"
-                          }`}>{c === "VERMELHO" ? "VERDE" : c}</span>
-                        ))}
+                        {p.sequence.split(",").map((c: string, j: number) => {
+                          const n = /^\d+$/.test(c) ? parseInt(c, 10) : null
+                          const nColorNum = n === null ? null : n === 0 ? 0 : n <= 7 ? 1 : 2
+                          const cls = n !== null
+                            ? (nColorNum === 1 ? "bg-green-400/30 text-green-300" : nColorNum === 2 ? "bg-gray-700 text-gray-300" : "bg-white/10 text-gray-200")
+                            : (c === "VERMELHO" ? "bg-green-400/30 text-green-300" : c === "PRETO" ? "bg-gray-700 text-gray-300" : "bg-white/10 text-gray-200")
+                          return <span key={j} className={`text-xs font-bold px-1.5 py-0.5 rounded ${cls}`}>{n !== null ? n : (c === "VERMELHO" ? "VERDE" : c)}</span>
+                        })}
                         <span className="text-gray-600 text-xs">→</span>
                         <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${p.betColorNum === 1 ? "bg-green-400/40 text-green-300" : "bg-gray-700 text-gray-200"}`}>
                           {p.betColor === "VERMELHO" ? "VERDE" : p.betColor}
@@ -1315,7 +1331,7 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
                     </div>
                     <div className="flex flex-col items-end gap-1 flex-shrink-0">
                       <button onClick={() => {
-                        const next = premiumDoublePatterns.filter((_: any, idx: number) => idx !== i)
+                        const next = premiumDoublePatterns.filter((o: any) => !(o.sequence === p.sequence && o.betColor === p.betColor))
                         try { localStorage.setItem("jonbet_premium_double_active_patterns", JSON.stringify(next)) } catch {}
                         setPremiumDoublePatterns(next)
                       }} className="text-gray-600 hover:text-red-400 transition-colors text-sm leading-none">✕</button>

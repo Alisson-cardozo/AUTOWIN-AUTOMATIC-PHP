@@ -1,0 +1,161 @@
+================================================================================
+  TÚNEL PC DE CASA → VPS  (Bac Bo REAL sem proxy pago)
+  AutoWin — IP residencial do seu Wi-Fi saindo pela VPS
+================================================================================
+
+IDEIA
+-----
+A VPS (Hostinger) tem IP de datacenter e a Evolution (Akamai) bloqueia.
+Seu PC em casa tem IP de Wi-Fi (residencial).
+
+Com um túnel SSH, a VPS usa o seu PC como "proxy SOCKS5":
+  Bot na VPS  →  127.0.0.1:1080  →  túnel SSH  →  seu PC / Wi-Fi  →  Evolution
+
+A Evolution enxerga o IP da SUA CASA, não o da Hostinger.
+
+
+O QUE VOCÊ PRECISA
+------------------
+1. PC em casa ligado, no Wi-Fi normal (não desligar)
+2. Acesso SSH da VPS:
+     IP:   187.77.33.118
+     User: root
+     Senha: (a senha root atual da VPS)
+3. Caminho do app na VPS: /var/www/autowin
+4. Janela do CMD/PowerShell do Windows ABERTA o tempo todo
+
+
+PASSO 1 — Abrir o túnel no WINDOWS (não no console da Hostinger)
+----------------------------------------------------------------
+1. No PC de CASA, abra CMD ou PowerShell
+   (prompt deve ser tipo: C:\Users\Aliss> )
+   NÃO use o terminal preto da Hostinger (root@srv...)
+
+2. Cole e Enter:
+
+   ssh -N -R 1080 root@187.77.33.118
+
+3. Se perguntar se confia no host → digite: yes
+4. Digite a senha root da VPS
+   (a senha NÃO aparece na tela — é normal)
+5. A janela fica PARADA / em branco ou com logs
+   → NÃO FECHE essa janela
+   → Se voltar o prompt C:\Users\...> o túnel CAIU
+
+Com log de debug (se der problema):
+
+   ssh -v -N -R 1080 root@187.77.33.118
+
+
+PASSO 2 — Configurar no Admin do site
+--------------------------------------
+Com o túnel AINDA ABERTO no Windows:
+
+  Admin → Proxy (Bac Bo REAL)
+
+  Tipo:     SOCKS5
+  Host:     127.0.0.1
+  Porta:    1080
+  Usuário:  (vazio)
+  Senha:    (vazio)
+
+  → Salvar
+  → Testar conexão
+
+
+PASSO 3 — O que o teste deve mostrar
+--------------------------------------
+BOM:
+  - IP de saída = sua cidade / seu provedor (ex.: JOTA NET, Vivo, etc.)
+  - NÃO deve ser 187.77.33.118 (Hostinger)
+  - Homepage Evolution HTTP 302 (ou sem Access Denied)
+
+RUIM:
+  - IP 187.77.33.118 Hostinger → túnel morto ou não está no Windows
+  - Proxy não respondeu → CMD fechado ou senha SSH errada
+  - 403 no /entry → às vezes o probe do curl falha; teste o BOT REAL
+
+
+PASSO 4 — Usar o bot
+--------------------
+1. Túnel SSH aberto no Windows
+2. Proxy SOCKS5 127.0.0.1:1080 salvo no Admin
+3. Conta Blaze conectada
+4. Bac Bo em modo REAL → Iniciar
+
+Se fechar o CMD, desligar o PC ou cair o Wi-Fi:
+  → túnel morre
+  → REAL volta a falhar (Akamai / IP da VPS)
+
+
+ATALHO (arquivo .bat na Área de Trabalho)
+-----------------------------------------
+Crie um arquivo: tunel-bacbo.bat
+
+  @echo off
+  echo ========================================
+  echo  Tunel Bac Bo - NAO FECHE esta janela
+  echo  VPS: root@187.77.33.118 porta 1080
+  echo ========================================
+  ssh -N -R 1080 root@187.77.33.118
+  echo.
+  echo Tunel encerrou. Pressione uma tecla.
+  pause
+
+Duplo clique → digita senha → deixa aberto.
+
+
+SE A PORTA 1080 ESTIVER OCUPADA
+--------------------------------
+No Windows:
+  ssh -N -R 1081 root@187.77.33.118
+
+No Admin:
+  Porta: 1081
+
+
+CONFERIR NA VPS (opcional)
+--------------------------
+Com o túnel aberto, no console da VPS:
+
+  ss -lntp | grep 1080
+  curl -x socks5h://127.0.0.1:1080 https://ipinfo.io/json
+
+Deve mostrar o IP da sua CASA, não o da VPS.
+
+
+ERROS COMUNS
+------------
+1) Rodou o ssh DENTRO da VPS (root@srv...)
+   → Errado. Tem que ser no Windows em casa.
+
+2) Permission denied (senha)
+   → Senha root errada. Confira no painel Hostinger / redefina.
+
+3) Túnel abriu e já voltou o prompt
+   → Caiu. Use: ssh -v -N -R 1080 root@187.77.33.118
+   → Veja a mensagem de erro no final.
+
+4) Desligou o PC
+   → Para tudo. Sem PC = sem IP residencial.
+   → Pra 24h sem PC: proxy mobile/residencial no Admin (pago).
+
+
+PROXY PAGO (alternativa 24h)
+----------------------------
+Se não quiser deixar o PC ligado:
+  Admin → Proxy → host/porta/user/senha do provedor MOBILE ou ISP/RESIDENCIAL
+  (não use proxy datacenter IPv4 barato — Akamai bloqueia)
+
+Com proxy pago, o túnel SSH do PC NÃO é necessário.
+
+
+RESUMO RÁPIDO
+-------------
+  [PC casa]  ssh -N -R 1080 root@187.77.33.118   ← janela aberta
+  [Admin]    SOCKS5  127.0.0.1  1080             ← salvar + testar
+  [Bot]      Bac Bo REAL                          ← com túnel aberto
+
+================================================================================
+  Arquivo gerado para consulta local no projeto autowin-php-cp
+================================================================================

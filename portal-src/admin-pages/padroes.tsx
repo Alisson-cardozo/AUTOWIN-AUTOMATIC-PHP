@@ -4,6 +4,8 @@ const ALL_TABS = [
   { key: "inicio",          label: "Início" },
   { key: "conta",           label: "Conta Blaze" },
   { key: "jonbet",          label: "Conta Jonbet" },
+  { key: "day-trade",       label: "Day Trade" },
+  { key: "premium-day-trade", label: "Premium Day Trade" },
   { key: "jogos-premium",   label: "Jogos Ao Vivo" },
   { key: "premium",         label: "Premium Blaze" },
   { key: "premium-jonbet",  label: "Premium Jonbet" },
@@ -11,12 +13,41 @@ const ALL_TABS = [
   { key: "notificacoes",    label: "Notificações" },
 ]
 
-const ALL_GAMES = [
-  { key: "DOUBLE",  label: "Double (Blaze/Jonbet)" },
-  { key: "CRASH",   label: "Crash (Blaze/Jonbet)" },
+const GAMES_BLAZE = [
+  { key: "DOUBLE",  label: "Double" },
   { key: "FORTUNE", label: "Fortune Double" },
-  { key: "BACBO",   label: "Bac Bo (Demo)" },
+  { key: "BACBO",   label: "Bac Bo" },
+  { key: "BACBO_LIVE", label: "Bac Bo Ao Vivo" },
+  { key: "ROLETA",  label: "Mega Roulette - Brazilian" },
 ]
+
+const GAMES_JONBET = [
+  { key: "DOUBLE",  label: "Double" },
+  { key: "FORTUNE", label: "Fortune Double" },
+]
+
+const LIVE_GAMES = [
+  { key: "bacbo",   label: "Bac Bo (Premium)" },
+  { key: "bacbo-live", label: "Bac Bo Ao Vivo (Premium)" },
+  { key: "futebol", label: "Futebol Studio" },
+  { key: "roletas", label: "Roletas Ao Vivo" },
+]
+
+// Cada aba com sub-itens tem sua própria config key — ocultar um jogo numa
+// aba não afeta as outras (ex: ocultar Bac Bo em Conta Blaze não mexe em
+// Conta Jonbet, nem no card "Bac Bo Ao Vivo" de Jogos Ao Vivo).
+const TAB_SUBGAMES: Record<string, { configKey: string; items: { key: string; label: string }[] } | null> = {
+  inicio: null,
+  conta: { configKey: "HIDDEN_GAMES_CONTA_BLAZE", items: GAMES_BLAZE },
+  jonbet: { configKey: "HIDDEN_GAMES_CONTA_JONBET", items: GAMES_JONBET },
+  "day-trade": null,
+  "premium-day-trade": null,
+  "jogos-premium": { configKey: "HIDDEN_LIVE_GAMES", items: LIVE_GAMES },
+  premium: { configKey: "HIDDEN_GAMES_PREMIUM_BLAZE", items: GAMES_BLAZE.filter((g) => g.key === "DOUBLE" || g.key === "FORTUNE") },
+  "premium-jonbet": { configKey: "HIDDEN_GAMES_PREMIUM_JONBET", items: GAMES_JONBET },
+  calculadora: null,
+  notificacoes: null,
+}
 
 const ALL_STRATEGIES = [
   { key: "NÚMEROS",             label: "Números" },
@@ -27,25 +58,34 @@ const ALL_STRATEGIES = [
 
 export default function OcultarRecursosPage() {
   const [hiddenTabs, setHiddenTabs] = useState<string[]>([])
-  const [hiddenGames, setHiddenGames] = useState<string[]>([])
+  const [hiddenByConfigKey, setHiddenByConfigKey] = useState<Record<string, string[]>>({})
   const [hiddenStrategies, setHiddenStrategies] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+
+  const allConfigKeys = Array.from(
+    new Set(Object.values(TAB_SUBGAMES).filter(Boolean).map((s) => s!.configKey))
+  )
 
   useEffect(() => {
     fetch("/api/admin/config")
       .then((r) => r.json())
       .then((data) => {
         setHiddenTabs((data.HIDDEN_TABS ?? "").split(",").filter(Boolean))
-        setHiddenGames((data.HIDDEN_GAMES ?? "").split(",").filter(Boolean))
+        const byKey: Record<string, string[]> = {}
+        for (const key of allConfigKeys) {
+          byKey[key] = (data[key] ?? "").split(",").filter(Boolean)
+        }
+        setHiddenByConfigKey(byKey)
         setHiddenStrategies((data.HIDDEN_STRATEGY_TYPES ?? "").split(",").filter(Boolean))
         setLoading(false)
       })
       .catch(() => setLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function saveConfig(updates: { HIDDEN_TABS?: string; HIDDEN_GAMES?: string; HIDDEN_STRATEGY_TYPES?: string }) {
+  async function saveConfig(updates: Record<string, string>) {
     setSaving(true)
     setSaved(false)
     try {
@@ -69,10 +109,11 @@ export default function OcultarRecursosPage() {
     saveConfig({ HIDDEN_TABS: next.join(",") })
   }
 
-  function handleToggleGame(key: string, checked: boolean) {
-    const next = checked ? [...hiddenGames, key] : hiddenGames.filter((x) => x !== key)
-    setHiddenGames(next)
-    saveConfig({ HIDDEN_GAMES: next.join(",") })
+  function handleToggleSubgame(configKey: string, gameKey: string, checked: boolean) {
+    const current = hiddenByConfigKey[configKey] ?? []
+    const next = checked ? [...current, gameKey] : current.filter((x) => x !== gameKey)
+    setHiddenByConfigKey((prev) => ({ ...prev, [configKey]: next }))
+    saveConfig({ [configKey]: next.join(",") })
   }
 
   function handleToggleStrategy(key: string, checked: boolean) {
@@ -95,7 +136,7 @@ export default function OcultarRecursosPage() {
         <div>
           <h1 className="text-2xl font-bold text-white">Configurações de Abas</h1>
           <p className="text-gray-400 text-sm mt-1">
-            Selecione quais abas, jogos e opções de padrões ficarão ocultos para os clientes.
+            Para cada aba, oculte ela inteira ou só alguns jogos/cards de dentro dela — cada aba tem sua própria lista, independente das outras.
           </p>
         </div>
         {(saving || saved) && (
@@ -105,61 +146,60 @@ export default function OcultarRecursosPage() {
         )}
       </div>
 
-      {/* 1. OCULTAR ABAS */}
-      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
+      {/* 1. OCULTAR ABAS + SUB-ITENS */}
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-3">
         <div>
           <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-widest flex items-center gap-2">
-            <span>🗂️</span> Ocultar Abas (Menu Lateral)
+            <span>🗂️</span> Ocultar Abas e Jogos
           </h2>
-          <p className="text-xs text-gray-500 mt-1">As abas selecionadas não aparecerão na barra lateral dos clientes.</p>
+          <p className="text-xs text-gray-500 mt-1">Oculte a aba inteira, ou mantenha ela visível e oculte só alguns jogos de dentro dela.</p>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="space-y-2">
           {ALL_TABS.map((tab) => {
             const isHidden = hiddenTabs.includes(tab.key)
+            const sub = TAB_SUBGAMES[tab.key]
             return (
-              <label key={tab.key} className="flex items-center gap-3 cursor-pointer group bg-gray-850 border border-gray-800 hover:border-gray-700/60 rounded-xl px-4 py-3 hover:bg-gray-800/40 transition-all">
-                <input
-                  type="checkbox"
-                  checked={isHidden}
-                  onChange={(e) => handleToggleTab(tab.key, e.target.checked)}
-                  className="w-4.5 h-4.5 rounded accent-green-500 cursor-pointer"
-                />
-                <span className="text-sm text-gray-300 group-hover:text-white transition-colors">{tab.label}</span>
-                {isHidden && <span className="ml-auto text-[10px] uppercase font-bold text-red-400 bg-red-500/10 px-2 py-0.5 rounded-full border border-red-500/20">oculto</span>}
-              </label>
+              <div key={tab.key} className="bg-gray-850 border border-gray-800 rounded-xl px-4 py-3 space-y-3">
+                <label className="flex items-center gap-3 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={isHidden}
+                    onChange={(e) => handleToggleTab(tab.key, e.target.checked)}
+                    className="w-4.5 h-4.5 rounded accent-green-500 cursor-pointer"
+                  />
+                  <span className="text-sm text-gray-300 group-hover:text-white transition-colors">{tab.label}</span>
+                  {isHidden && <span className="ml-auto text-[10px] uppercase font-bold text-red-400 bg-red-500/10 px-2 py-0.5 rounded-full border border-red-500/20">oculto</span>}
+                </label>
+                {sub && (
+                  <div className="pl-8 space-y-2">
+                    <p className="text-[11px] text-gray-500">Ou oculte só alguns jogos, mantendo a aba visível:</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      {sub.items.map((game) => {
+                        const hiddenList = hiddenByConfigKey[sub.configKey] ?? []
+                        const gameHidden = hiddenList.includes(game.key)
+                        return (
+                          <label key={game.key} className="flex items-center gap-2 cursor-pointer group bg-gray-900 border border-gray-800 hover:border-gray-700/60 rounded-lg px-3 py-2 hover:bg-gray-800/40 transition-all">
+                            <input
+                              type="checkbox"
+                              checked={gameHidden}
+                              onChange={(e) => handleToggleSubgame(sub.configKey, game.key, e.target.checked)}
+                              className="w-4 h-4 rounded accent-green-500 cursor-pointer"
+                            />
+                            <span className="text-xs text-gray-300 group-hover:text-white transition-colors">{game.label}</span>
+                            {gameHidden && <span className="ml-auto text-[9px] uppercase font-bold text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded-full border border-red-500/20">oculto</span>}
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
             )
           })}
         </div>
       </div>
 
-      {/* 2. OCULTAR JOGOS */}
-      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
-        <div>
-          <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-widest flex items-center gap-2">
-            <span>🎮</span> Ocultar Jogos
-          </h2>
-          <p className="text-xs text-gray-500 mt-1">Os jogos selecionados não estarão visíveis no painel premium ou área de apostas.</p>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {ALL_GAMES.map((game) => {
-            const isHidden = hiddenGames.includes(game.key)
-            return (
-              <label key={game.key} className="flex items-center gap-3 cursor-pointer group bg-gray-850 border border-gray-800 hover:border-gray-700/60 rounded-xl px-4 py-3 hover:bg-gray-800/40 transition-all">
-                <input
-                  type="checkbox"
-                  checked={isHidden}
-                  onChange={(e) => handleToggleGame(game.key, e.target.checked)}
-                  className="w-4.5 h-4.5 rounded accent-green-500 cursor-pointer"
-                />
-                <span className="text-sm text-gray-300 group-hover:text-white transition-colors">{game.label}</span>
-                {isHidden && <span className="ml-auto text-[10px] uppercase font-bold text-red-400 bg-red-500/10 px-2 py-0.5 rounded-full border border-red-500/20">oculto</span>}
-              </label>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* 3. OCULTAR OPÇÕES DE PADRÃO */}
+      {/* 2. OCULTAR OPÇÕES DE PADRÃO */}
       <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
         <div>
           <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-widest flex items-center gap-2">

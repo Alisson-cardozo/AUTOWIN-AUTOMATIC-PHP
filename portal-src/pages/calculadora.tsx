@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { NumberField } from "@/components/ui/NumberField"
 
 type Platform = "BLAZE" | "JONBET"
-type Game = "CRASH" | "DOUBLE" | "FORTUNE"
+type Game = "DOUBLE" | "FORTUNE" | "BACBO" | "BACBO_LIVE"
 type ModeKey = "CONTROLADO" | "ANALITICO" | "ARRISCADO"
 
 interface ModeConfig {
@@ -10,7 +10,6 @@ interface ModeConfig {
   label: string
   icon: string
   accent: string
-  crashTarget: number
   galeMultiplier: number
   bancaPercentCap: number
   stopLossCeilingPercent: number
@@ -28,7 +27,6 @@ const MODES: ModeConfig[] = [
     label: "Controlado",
     icon: "🛡️",
     accent: "emerald",
-    crashTarget: 1.5,
     galeMultiplier: 1.8,
     bancaPercentCap: 0.03,
     stopLossCeilingPercent: 0.40,
@@ -44,7 +42,6 @@ const MODES: ModeConfig[] = [
     label: "Analítico",
     icon: "📊",
     accent: "sky",
-    crashTarget: 2.0,
     galeMultiplier: 2.0,
     bancaPercentCap: 0.05,
     stopLossCeilingPercent: 0.60,
@@ -60,7 +57,6 @@ const MODES: ModeConfig[] = [
     label: "Arriscado",
     icon: "🔥",
     accent: "rose",
-    crashTarget: 3.0,
     galeMultiplier: 2.5,
     bancaPercentCap: 0.10,
     stopLossCeilingPercent: 0.85,
@@ -73,10 +69,40 @@ const MODES: ModeConfig[] = [
   },
 ]
 
-const ACCENT_CLASSES: Record<string, { border: string; text: string; bg: string; solidBg: string }> = {
-  emerald: { border: "border-emerald-500/30", text: "text-emerald-400", bg: "bg-emerald-500/10", solidBg: "bg-emerald-600 hover:bg-emerald-500" },
-  sky:     { border: "border-sky-500/30",     text: "text-sky-400",     bg: "bg-sky-500/10",     solidBg: "bg-sky-600 hover:bg-sky-500" },
-  rose:    { border: "border-rose-500/30",    text: "text-rose-400",    bg: "bg-rose-500/10",    solidBg: "bg-rose-600 hover:bg-rose-500" },
+const ACCENT_CLASSES: Record<
+  string,
+  { border: string; text: string; bg: string; solidBg: string; glow: string; wash: string; iconBg: string; ring: string }
+> = {
+  emerald: {
+    border: "border-emerald-500/30",
+    text: "text-emerald-400",
+    bg: "bg-emerald-500/10",
+    solidBg: "bg-emerald-600 hover:bg-emerald-500",
+    glow: "hover:shadow-emerald-500/10",
+    wash: "from-emerald-500/[0.07] via-transparent to-transparent",
+    iconBg: "bg-emerald-500/15 border-emerald-500/30",
+    ring: "focus:ring-emerald-500/50",
+  },
+  sky: {
+    border: "border-sky-500/30",
+    text: "text-sky-400",
+    bg: "bg-sky-500/10",
+    solidBg: "bg-sky-600 hover:bg-sky-500",
+    glow: "hover:shadow-sky-500/10",
+    wash: "from-sky-500/[0.07] via-transparent to-transparent",
+    iconBg: "bg-sky-500/15 border-sky-500/30",
+    ring: "focus:ring-sky-500/50",
+  },
+  rose: {
+    border: "border-rose-500/30",
+    text: "text-rose-400",
+    bg: "bg-rose-500/10",
+    solidBg: "bg-rose-600 hover:bg-rose-500",
+    glow: "hover:shadow-rose-500/10",
+    wash: "from-rose-500/[0.07] via-transparent to-transparent",
+    iconBg: "bg-rose-500/15 border-rose-500/30",
+    ring: "focus:ring-rose-500/50",
+  },
 }
 
 function money(v: number) {
@@ -107,8 +133,10 @@ interface CalcResult {
 }
 
 function computeResult(mode: ModeConfig, game: Game, inputs: CalcInputs): CalcResult {
-  const target = game === "CRASH" ? mode.crashTarget : 2.0
-  const targetLabel = game === "CRASH" ? `${target.toFixed(1)}x` : "cor simples (~2x)"
+  // Crash removido — Double/Fortune/Bac Bo usam payout ~1:1 (alvo 2x no lucro)
+  const target = 2.0
+  const targetLabel =
+    game === "BACBO" || game === "BACBO_LIVE" ? "Player/Banker (~2x)" : game === "FORTUNE" ? "cor Fortune (~2x)" : "cor simples (~2x)"
 
   const banca = Math.max(0, inputs.banca)
   const gales = Math.max(0, Math.floor(inputs.gales))
@@ -225,9 +253,13 @@ function ModeCard({
         skipFirstEntry: mode.management === "SKIP_FIRST",
         skipEntryAfterLoss: mode.management === "AFTER_LOSS",
       }
-      if (game !== "CRASH") {
+      if (game !== "BACBO" && game !== "BACBO_LIVE") {
         payload.protectionHand = mode.protectionOn ? "SIM" : "NÃO"
         payload.protectionValue = mode.protectionOn ? result.base : 0
+      } else if (mode.protectionOn) {
+        // Bac Bo: proteção no empate (mesmo conceito)
+        payload.protectionHand = "SIM"
+        payload.protectionValue = result.base
       }
       const url = platform === "BLAZE" ? "/api/user/configuracoes" : "/api/user/jonbet/configuracoes"
       const res = await fetch(url, {
@@ -243,68 +275,74 @@ function ModeCard({
   }
 
   return (
-    <div className={`bg-gray-900 border ${accent.border} rounded-xl p-5 flex flex-col gap-4`}>
-      <div>
-        <div className="flex items-center gap-2">
-          <span className="text-xl">{mode.icon}</span>
-          <h3 className={`text-lg font-bold ${accent.text}`}>{mode.label}</h3>
+    <div
+      className={`relative overflow-hidden bg-gray-900 border ${accent.border} rounded-2xl p-5 flex flex-col gap-4 shadow-lg ${accent.glow} hover:shadow-xl transition-shadow duration-300`}
+    >
+      <div className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${accent.wash}`} />
+
+      <div className="relative flex items-start gap-3">
+        <div className={`w-10 h-10 shrink-0 flex items-center justify-center rounded-xl border ${accent.iconBg} text-lg`}>
+          {mode.icon}
         </div>
-        <p className="text-xs text-gray-500 mt-1 leading-relaxed">{mode.blurb}</p>
+        <div>
+          <h3 className={`text-lg font-bold ${accent.text}`}>{mode.label}</h3>
+          <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">{mode.blurb}</p>
+        </div>
       </div>
 
       {result.aviso && (
-        <div className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg p-2">
+        <div className="relative text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg p-2">
           ⚠️ {result.aviso}
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-3 text-sm">
-        <div>
-          <p className="text-gray-500 text-[11px]">Valor de entrada</p>
+      <div className="relative grid grid-cols-2 gap-2.5 text-sm">
+        <div className="bg-gray-950/50 border border-gray-800/60 rounded-lg px-3 py-2">
+          <p className="text-gray-500 text-[10px] uppercase tracking-wide">Valor de entrada</p>
           <p className="text-white font-semibold">{money(result.base)}</p>
         </div>
-        <div>
-          <p className="text-gray-500 text-[11px]">Alvo</p>
+        <div className="bg-gray-950/50 border border-gray-800/60 rounded-lg px-3 py-2">
+          <p className="text-gray-500 text-[10px] uppercase tracking-wide">Alvo</p>
           <p className="text-white font-semibold">{result.targetLabel}</p>
         </div>
-        <div>
-          <p className="text-gray-500 text-[11px]">Gales</p>
+        <div className="bg-gray-950/50 border border-gray-800/60 rounded-lg px-3 py-2">
+          <p className="text-gray-500 text-[10px] uppercase tracking-wide">Gales</p>
           <p className="text-white font-semibold">{result.gales}</p>
         </div>
-        <div>
-          <p className="text-gray-500 text-[11px]">Entradas necessárias</p>
+        <div className="bg-gray-950/50 border border-gray-800/60 rounded-lg px-3 py-2">
+          <p className="text-gray-500 text-[10px] uppercase tracking-wide">Entradas necessárias</p>
           <p className="text-white font-semibold">{result.entradasNecessarias || "—"}</p>
         </div>
-        <div>
-          <p className="text-gray-500 text-[11px]">Ciclos recomendados</p>
+        <div className="bg-gray-950/50 border border-gray-800/60 rounded-lg px-3 py-2">
+          <p className="text-gray-500 text-[10px] uppercase tracking-wide">Ciclos recomendados</p>
           <p className="text-white font-semibold">{result.ciclosSustentaveis}</p>
         </div>
-        {game !== "CRASH" && (
-          <div>
-            <p className="text-gray-500 text-[11px]">Proteção Branco/Amarelo</p>
-            <p className="text-white font-semibold">{mode.protectionOn ? `Sim — ${money(result.base)}` : "Não"}</p>
-          </div>
-        )}
-        <div>
-          <p className="text-gray-500 text-[11px]">Stop Win</p>
+        <div className="bg-gray-950/50 border border-gray-800/60 rounded-lg px-3 py-2">
+          <p className="text-gray-500 text-[10px] uppercase tracking-wide">
+            {game === "BACBO" || game === "BACBO_LIVE" ? "Proteção Empate" : "Proteção Branco/Amarelo"}
+          </p>
+          <p className="text-white font-semibold">{mode.protectionOn ? `Sim — ${money(result.base)}` : "Não"}</p>
+        </div>
+        <div className="bg-green-500/[0.06] border border-green-800/40 rounded-lg px-3 py-2">
+          <p className="text-gray-500 text-[10px] uppercase tracking-wide">Stop Win</p>
           <p className="text-green-400 font-semibold">{money(inputs.metaDoDia)}</p>
         </div>
-        <div>
-          <p className="text-gray-500 text-[11px]">
-            Stop Loss <span className="text-gray-600">({result.maxPerdasFonte === "banca" ? "limitado pela banca" : "limitado pela meta"})</span>
+        <div className="bg-red-500/[0.06] border border-red-800/40 rounded-lg px-3 py-2">
+          <p className="text-gray-500 text-[10px] uppercase tracking-wide">
+            Stop Loss <span className="text-gray-600">({result.maxPerdasFonte === "banca" ? "banca" : "meta"})</span>
           </p>
           <p className="text-red-400 font-semibold">{money(result.maxPerdas)}</p>
         </div>
       </div>
 
-      <div className="bg-gray-950/60 border border-gray-800 rounded-lg p-3">
-        <p className="text-[11px] text-gray-500 mb-1">Gestão recomendada</p>
+      <div className="bg-gray-950/60 border border-gray-800 rounded-xl p-3.5">
+        <p className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Gestão recomendada</p>
         <p className={`text-sm font-semibold ${accent.text}`}>{managementLabel}</p>
         <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">{managementExplain}</p>
       </div>
 
-      <div className="bg-gray-950/60 border border-gray-800 rounded-lg p-3 space-y-1">
-        <p className="text-[11px] text-gray-500 mb-1">Se bater tudo (cenário completo)</p>
+      <div className="bg-gray-950/60 border border-gray-800 rounded-xl p-3.5 space-y-1.5">
+        <p className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Se bater tudo (cenário completo)</p>
         <div className="flex justify-between text-xs">
           <span className="text-gray-400">Lucro projetado</span>
           <span className="text-green-400 font-semibold">+{money(result.lucroProjetado)}</span>
@@ -321,12 +359,12 @@ function ModeCard({
 
       <button
         onClick={() => setShowDetail((v) => !v)}
-        className="text-[11px] text-gray-500 hover:text-gray-300 text-left"
+        className={`text-[11px] text-gray-500 hover:${accent.text} text-left transition-colors w-fit`}
       >
         {showDetail ? "▲ esconder detalhamento gale a gale" : "▼ ver detalhamento gale a gale"}
       </button>
       {showDetail && (
-        <div className="bg-gray-950/60 border border-gray-800 rounded-lg p-3 overflow-x-auto">
+        <div className="bg-gray-950/60 border border-gray-800 rounded-xl p-3 overflow-x-auto">
           <table className="w-full text-[11px]">
             <thead>
               <tr className="text-gray-500 text-left">
@@ -350,12 +388,12 @@ function ModeCard({
 
       <button
         onClick={() => setShowCiclos((v) => !v)}
-        className="text-[11px] text-gray-500 hover:text-gray-300 text-left"
+        className={`text-[11px] text-gray-500 hover:${accent.text} text-left transition-colors w-fit`}
       >
         {showCiclos ? "▲ esconder detalhamento por ciclo" : `▼ ver como ficam os ${result.ciclosSustentaveis} ciclo(s) até o Stop Loss`}
       </button>
       {showCiclos && (
-        <div className="bg-gray-950/60 border border-gray-800 rounded-lg p-3 overflow-x-auto">
+        <div className="bg-gray-950/60 border border-gray-800 rounded-xl p-3 overflow-x-auto">
           <table className="w-full text-[11px]">
             <thead>
               <tr className="text-gray-500 text-left">
@@ -384,12 +422,12 @@ function ModeCard({
       <button
         onClick={handleApply}
         disabled={applyState === "loading"}
-        className={`w-full ${accent.solidBg} disabled:opacity-50 text-white font-bold py-2.5 rounded-lg text-sm transition-colors`}
+        className={`relative w-full ${accent.solidBg} disabled:opacity-50 text-white font-bold py-2.5 rounded-xl text-sm shadow-md hover:shadow-lg active:scale-[0.99] transition-all`}
       >
         {applyState === "loading" ? "Aplicando..." : applyState === "ok" ? "✅ Aplicado!" : applyState === "error" ? "❌ Erro — tente de novo" : "Aplicar essa configuração"}
       </button>
       {applyState === "ok" && (
-        <p className="text-[11px] text-green-400 text-center -mt-2">
+        <p className="relative text-[11px] text-green-400 text-center -mt-2">
           Configuração salva — ative o bot na aba Conta {platform === "BLAZE" ? "Blaze" : "Jonbet"} pra começar.
         </p>
       )}
@@ -397,13 +435,48 @@ function ModeCard({
   )
 }
 
+const GAME_LABELS: Record<Game, string> = {
+  DOUBLE: "Double",
+  FORTUNE: "Fortune",
+  BACBO: "Bac Bo",
+  BACBO_LIVE: "Bac Bo Ao Vivo",
+}
+
 export default function CalculadoraPage() {
   const [platform, setPlatform] = useState<Platform>("BLAZE")
-  const [game, setGame] = useState<Game>("CRASH")
+  const [game, setGame] = useState<Game>("DOUBLE")
   const [banca, setBanca] = useState(100)
   const [gales, setGales] = useState(2)
   const [metaDoDia, setMetaDoDia] = useState(20)
   const [bancaLoading, setBancaLoading] = useState(false)
+  const [hiddenGames, setHiddenGames] = useState<string[]>([])
+
+  // Respeita jogos ocultados pelo admin (Configurações de Abas) — mesma
+  // fonte usada em conta.tsx, não pode aparecer nada de um jogo oculto.
+  useEffect(() => {
+    fetch("/api/user/me")
+      .then((r) => r.json())
+      .then((data) => {
+        if (typeof data.hiddenGames === "string") {
+          setHiddenGames(data.hiddenGames.split(",").map((g: string) => g.trim()).filter(Boolean))
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  const availableGames = (["DOUBLE", "FORTUNE", "BACBO", "BACBO_LIVE"] as Game[]).filter(
+    (g) =>
+      !hiddenGames.includes(g) &&
+      ((g !== "BACBO" && g !== "BACBO_LIVE") || platform === "BLAZE")
+  )
+
+  // Bac Bo só na Blaze, e jogo atual pode ter ficado oculto/indisponível —
+  // troca pro primeiro disponível automaticamente.
+  useEffect(() => {
+    if (availableGames.length > 0 && !availableGames.includes(game)) {
+      setGame(availableGames[0])
+    }
+  }, [platform, game, availableGames])
 
   useEffect(() => {
     let cancelled = false
@@ -428,74 +501,85 @@ export default function CalculadoraPage() {
   const inputs: CalcInputs = { banca, gales, metaDoDia }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-white">🧮 Calculadora Premium</h1>
-        <p className="text-gray-400 text-sm mt-1">
-          Informe sua banca e seus limites — o sistema calcula 3 perfis de configuração prontos pra usar.
-        </p>
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
+      <div className="flex items-center gap-4">
+        <div className="w-12 h-12 shrink-0 flex items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500/20 to-purple-600/20 border border-indigo-500/30 shadow-[0_0_20px_rgba(99,102,241,0.15)] text-2xl">
+          🧮
+        </div>
+        <div>
+          <h1 className="text-2xl font-black text-white tracking-tight">Calculadora Premium</h1>
+          <p className="text-gray-400 text-sm mt-0.5">
+            Informe sua banca e seus limites — o sistema calcula 3 perfis de configuração prontos pra usar.
+          </p>
+        </div>
       </div>
 
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <div className="bg-gradient-to-br from-gray-900 to-gray-900/60 border border-gray-800 rounded-2xl p-5 sm:p-6 shadow-lg">
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
           <div className="col-span-1">
-            <label className="text-gray-500 text-[11px]">Plataforma</label>
+            <label className="text-gray-400 text-[11px] font-medium uppercase tracking-wide">Plataforma</label>
             <select
               value={platform}
               onChange={(e) => setPlatform(e.target.value as Platform)}
-              className="w-full mt-1 bg-gray-950 border border-gray-800 rounded-lg px-2 py-2 text-sm text-white"
+              className="w-full mt-1.5 bg-gray-950 border border-gray-800 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all"
             >
               <option value="BLAZE">Blaze</option>
               <option value="JONBET">Jonbet</option>
             </select>
           </div>
           <div className="col-span-1">
-            <label className="text-gray-500 text-[11px]">Jogo</label>
+            <label className="text-gray-400 text-[11px] font-medium uppercase tracking-wide">Jogo</label>
             <select
               value={game}
               onChange={(e) => setGame(e.target.value as Game)}
-              className="w-full mt-1 bg-gray-950 border border-gray-800 rounded-lg px-2 py-2 text-sm text-white"
+              className="w-full mt-1.5 bg-gray-950 border border-gray-800 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all"
             >
-              <option value="CRASH">Crash</option>
-              <option value="DOUBLE">Double</option>
-              <option value="FORTUNE">Fortune</option>
+              {availableGames.map((g) => (
+                <option key={g} value={g}>{GAME_LABELS[g]}</option>
+              ))}
             </select>
           </div>
           <div className="col-span-1">
-            <label className="text-gray-500 text-[11px]">
-              Valor da banca (R$){bancaLoading ? " — buscando saldo..." : ""}
+            <label className="text-gray-400 text-[11px] font-medium uppercase tracking-wide">
+              Valor da banca (R$){bancaLoading ? " — buscando..." : ""}
             </label>
             <NumberField
               value={banca}
               onChange={setBanca}
-              className="w-full mt-1 bg-gray-950 border border-gray-800 rounded-lg px-2 py-2 text-sm text-white"
+              className="w-full mt-1.5 bg-gray-950 border border-gray-800 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all"
             />
             <p className="text-[10px] text-gray-600 mt-1">Preenchido com seu saldo atual — edite se quiser.</p>
           </div>
           <div className="col-span-1">
-            <label className="text-gray-500 text-[11px]">Quantidade de gales</label>
+            <label className="text-gray-400 text-[11px] font-medium uppercase tracking-wide">Qtd. de gales</label>
             <NumberField
               value={gales}
               onChange={setGales}
-              className="w-full mt-1 bg-gray-950 border border-gray-800 rounded-lg px-2 py-2 text-sm text-white"
+              className="w-full mt-1.5 bg-gray-950 border border-gray-800 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all"
             />
           </div>
           <div className="col-span-1">
-            <label className="text-gray-500 text-[11px]">Meta do dia (R$)</label>
+            <label className="text-gray-400 text-[11px] font-medium uppercase tracking-wide">Meta do dia (R$)</label>
             <NumberField
               value={metaDoDia}
               onChange={setMetaDoDia}
-              className="w-full mt-1 bg-gray-950 border border-gray-800 rounded-lg px-2 py-2 text-sm text-white"
+              className="w-full mt-1.5 bg-gray-950 border border-gray-800 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all"
             />
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {MODES.map((mode) => (
-          <ModeCard key={mode.key} mode={mode} game={game} platform={platform} inputs={inputs} />
-        ))}
-      </div>
+      {availableGames.length === 0 ? (
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center text-gray-500 text-sm">
+          Nenhum jogo disponível pra essa plataforma no momento.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+          {MODES.map((mode) => (
+            <ModeCard key={mode.key} mode={mode} game={game} platform={platform} inputs={inputs} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

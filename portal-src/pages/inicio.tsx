@@ -11,6 +11,12 @@ interface UserData {
   isTesting: boolean
   hasToken: boolean
   isAdminAccount: boolean
+  /** Abas ocultas pelo admin (ex: "day-trade,jonbet") */
+  hiddenTabs?: string
+  hiddenGamesContaBlaze?: string
+  hiddenGamesContaJonbet?: string
+  hiddenGamesPremiumBlaze?: string
+  hiddenGamesPremiumJonbet?: string
 }
 
 interface PlatformSummary {
@@ -28,6 +34,9 @@ interface PlatformSummary {
 interface Summary {
   blaze: PlatformSummary
   jonbet: PlatformSummary
+  daytrade?: PlatformSummary
+  daytradeBank?: PlatformSummary
+  iqAccountType?: "DEMO" | "REAL"
   combinedProfitToday: number
   combinedProfitMonth?: number
   monthCountWin?: number
@@ -49,8 +58,29 @@ interface BotEntry {
   createdAt: string
 }
 
-function money(v: number) {
-  return `R$ ${v.toFixed(2)}`
+function money(v: number, currency: "BRL" | "USD" = "BRL") {
+  const sym = currency === "USD" ? "$" : "R$"
+  return `${sym} ${v.toFixed(2)}`
+}
+
+// União das listas de Conta Blaze + Conta Jonbet — o que rege se o bot pode
+// rodar aquele jogo (e portanto gerar WIN/LOSS pro relatório) em qualquer plataforma.
+// Day Trade é aba própria (HIDDEN_TABS com "day-trade") → mapeia para DAY_TRADE.
+function hiddenGamesUnion(user: UserData | null): string[] {
+  const blaze = (user?.hiddenGamesContaBlaze ?? "").split(",").map((g) => g.trim()).filter(Boolean)
+  const jonbet = (user?.hiddenGamesContaJonbet ?? "").split(",").map((g) => g.trim()).filter(Boolean)
+  const tabs = (user?.hiddenTabs ?? "").split(",").map((g) => g.trim()).filter(Boolean)
+  const list = new Set([...blaze, ...jonbet])
+  // Aba Day Trade oculta = não aparece filtro/jogo/entradas no relatório
+  if (tabs.includes("day-trade") || tabs.includes("DAY_TRADE") || tabs.includes("daytrade")) {
+    list.add("DAY_TRADE")
+  }
+  return Array.from(list)
+}
+
+function isDayTradeTabHidden(user: UserData | null): boolean {
+  const tabs = (user?.hiddenTabs ?? "").split(",").map((g) => g.trim().toLowerCase()).filter(Boolean)
+  return tabs.includes("day-trade") || tabs.includes("day_trade") || tabs.includes("daytrade")
 }
 
 export default function InicioPage() {
@@ -59,10 +89,11 @@ export default function InicioPage() {
   const [entries, setEntries] = useState<BotEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState(false)
+  const [resetting, setResetting] = useState(false)
 
   // Filters
-  const [filterPlatform, setFilterPlatform] = useState<"TODOS" | "BLAZE" | "JONBET">("TODOS")
-  const [filterGame, setFilterGame] = useState<"TODOS" | "DOUBLE" | "CRASH" | "FORTUNE" | "BACBO">("TODOS")
+  const [filterPlatform, setFilterPlatform] = useState<"TODOS" | "BLAZE" | "JONBET" | "IQOPTION">("TODOS")
+  const [filterGame, setFilterGame] = useState<"TODOS" | "DOUBLE" | "FORTUNE" | "BACBO" | "BACBO_LIVE" | "ROLETA" | "DAY_TRADE">("TODOS")
   const [filterResult, setFilterResult] = useState<"TODOS" | "WIN" | "LOSS">("TODOS")
 
   async function loadData() {
@@ -92,6 +123,37 @@ export default function InicioPage() {
     return () => clearInterval(iv)
   }, [])
 
+  // Se o jogo/plataforma filtrado foi ocultado pelo admin, volta pro "Todos"
+  useEffect(() => {
+    if (filterGame !== "TODOS" && hiddenGamesUnion(user).includes(filterGame)) {
+      setFilterGame("TODOS")
+    }
+    if (filterPlatform === "IQOPTION" && isDayTradeTabHidden(user)) {
+      setFilterPlatform("TODOS")
+    }
+  }, [user?.hiddenGamesContaBlaze, user?.hiddenGamesContaJonbet, user?.hiddenTabs, filterGame, filterPlatform])
+
+  async function handleReset() {
+    if (resetting) return
+    const ok = confirm(
+      "Isso vai apagar TODO o histórico de WIN/LOSS (Double, Fortune, Bac Bo, Day Trade, Blaze, Jonbet e IQ Option) e redefinir a banca com o saldo REAL atual das contas conectadas.\n\nEssa ação não pode ser desfeita. Continuar?"
+    )
+    if (!ok) return
+    setResetting(true)
+    try {
+      const res = await fetch("/api/user/reset-report", { method: "POST" })
+      if (res.ok) {
+        await loadData()
+      } else {
+        alert("Não foi possível resetar o relatório. Tente novamente.")
+      }
+    } catch {
+      alert("Não foi possível resetar o relatório. Tente novamente.")
+    } finally {
+      setResetting(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -106,8 +168,21 @@ export default function InicioPage() {
     )
   }
 
+  // Jogos/abas ocultados pelo admin não aparecem em nenhum lugar do relatório
+  const hiddenGamesList = hiddenGamesUnion(user)
+  const dayTradeHidden = isDayTradeTabHidden(user) || hiddenGamesList.includes("DAY_TRADE")
+  const gameOptions = (["TODOS", "DOUBLE", "FORTUNE", "BACBO", "BACBO_LIVE", "ROLETA", "DAY_TRADE"] as const)
+    .filter((g) => g === "TODOS" || !hiddenGamesList.includes(g))
+  const platformOptions = (["TODOS", "BLAZE", "JONBET", "IQOPTION"] as const).filter(
+    (p) => p !== "IQOPTION" || !dayTradeHidden
+  )
+
   // Relatório do mês: apenas WIN/LOSS finais (gale intermediário não conta no placar)
-  const monthlyResults = entries.filter((e) => e.type === "WIN" || e.type === "LOSS")
+  const monthlyResults = entries
+    .filter((e) => e.type === "WIN" || e.type === "LOSS")
+    .filter((e) => !hiddenGamesList.includes((e.gameType || "").toUpperCase()))
+    // aba Day Trade oculta → some plataforma IQ Option do histórico
+    .filter((e) => !dayTradeHidden || (e.platform || "").toUpperCase() !== "IQOPTION")
 
   const filtered = monthlyResults.filter((entry) => {
     const platMatch = filterPlatform === "TODOS" || (entry.platform || "").toUpperCase() === filterPlatform
@@ -161,13 +236,13 @@ export default function InicioPage() {
     const ops = wins + losses
     const rate = ops > 0 ? Math.round((wins / ops) * 100) : 0
 
-    const text = `📊 *RELATÓRIO DO MÊS (${monthLabel})*\n\n` +
-      `• *Plataforma:* ${filterPlatform}\n` +
-      `• *Jogo:* ${filterGame}\n` +
-      `• *Assertividade:* ${rate}%\n` +
-      `• *Placar:* ${wins} WINS / ${losses} LOSSES\n` +
-      `• *Lucro do mês:* R$ ${totalProfit.toFixed(2)}\n\n` +
-      `*Histórico:*\n` +
+    const text = `📊 RELATÓRIO DO MÊS (${monthLabel})\n\n` +
+      `Plataforma: ${filterPlatform}\n` +
+      `Jogo: ${filterGame}\n` +
+      `Assertividade: ${rate}%\n` +
+      `Placar: ${wins} WINS / ${losses} LOSSES\n` +
+      `Lucro do mês: R$ ${totalProfit.toFixed(2)}\n\n` +
+      `Histórico:\n` +
       filtered.slice(0, 20).map((e) => {
         const color = e.type === "WIN" ? "🟢 WIN" : "🔴 LOSS"
         const game = e.gameType || "—"
@@ -270,7 +345,9 @@ export default function InicioPage() {
             <p className={`text-2xl font-black tracking-tight ${combinedProfit >= 0 ? "text-green-400" : "text-red-400"}`}>
               {combinedProfit >= 0 ? "+" : ""}R$ {combinedProfit.toFixed(2)}
             </p>
-            <span className="text-[10px] text-gray-500 block">Blaze + Jonbet · todos os jogos</span>
+            <span className="text-[10px] text-gray-500 block">
+              {dayTradeHidden ? "Blaze + Jonbet · todos os jogos" : "Blaze + Jonbet + IQ Option · todos os jogos"}
+            </span>
           </div>
           <div className="w-12 h-12 rounded-full bg-green-500/10 border border-green-500/20 flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.15)] group-hover:scale-110 transition-transform">
             <span className="text-green-400 text-lg">💰</span>
@@ -332,6 +409,48 @@ export default function InicioPage() {
         </div>
       </div>
 
+      {/* Banca por plataforma: início → atual (Day Trade some se aba oculta) */}
+      <div className={`grid grid-cols-1 gap-4 ${dayTradeHidden ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
+        <div className="bg-gray-900 border border-gray-800/80 rounded-2xl p-5">
+          <span className="text-xs text-gray-500 font-semibold uppercase tracking-wider block mb-1">Banca Blaze</span>
+          <p className="text-lg font-black text-white tracking-tight">
+            {money(summary?.blaze.firstBalance ?? 0)} <span className="text-gray-500 font-normal">→</span> {money(summary?.blaze.balance ?? 0)}
+          </p>
+        </div>
+        <div className="bg-gray-900 border border-gray-800/80 rounded-2xl p-5">
+          <span className="text-xs text-gray-500 font-semibold uppercase tracking-wider block mb-1">Banca Jonbet</span>
+          <p className="text-lg font-black text-white tracking-tight">
+            {money(summary?.jonbet.firstBalance ?? 0)} <span className="text-gray-500 font-normal">→</span> {money(summary?.jonbet.balance ?? 0)}
+          </p>
+        </div>
+        {!dayTradeHidden && (
+          <div className="bg-gray-900 border border-gray-800/80 rounded-2xl p-5">
+            <div className="flex items-center justify-between mb-1 gap-2">
+              <span className="text-xs text-gray-500 font-semibold uppercase tracking-wider block">Banca IQ Option</span>
+              <span
+                className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border shrink-0 ${
+                  summary?.iqAccountType === "REAL"
+                    ? "bg-red-500/10 text-red-400 border-red-500/30"
+                    : "bg-amber-500/10 text-amber-300 border-amber-500/30"
+                }`}
+              >
+                {summary?.iqAccountType === "REAL" ? "REAL" : "DEMO"}
+              </span>
+            </div>
+            <p className="text-lg font-black text-white tracking-tight">
+              {money(summary?.daytradeBank?.firstBalance ?? summary?.daytrade?.firstBalance ?? 0, "USD")}{" "}
+              <span className="text-gray-500 font-normal">→</span>{" "}
+              {money(summary?.daytradeBank?.balance ?? summary?.daytrade?.balance ?? 0, "USD")}
+            </p>
+            <p className="text-[10px] text-gray-500 mt-1">
+              {summary?.iqAccountType === "REAL"
+                ? "Day Trade · USD conta real (entra no lucro do mês)"
+                : "Day Trade · USD DEMO (não entra no lucro do mês)"}
+            </p>
+          </div>
+        )}
+      </div>
+
       {/* 3. INTERACTIVE GRAPH AND COMPREHENSIVE FILTER PORTAL */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
@@ -343,13 +462,23 @@ export default function InicioPage() {
                 <h3 className="text-sm font-semibold text-white uppercase tracking-wider">Histórico do Mês</h3>
                 <p className="text-xs text-gray-500 mt-0.5">Todos os WIN/LOSS · não zera ao reiniciar o bot</p>
               </div>
-              <button
-                onClick={handleCopyReport}
-                disabled={filtered.length === 0}
-                className="text-xs font-bold bg-green-500 hover:bg-green-400 disabled:bg-gray-800 text-black disabled:text-gray-500 px-4 py-2.5 rounded-xl transition-all shadow-[0_4px_15px_rgba(16,185,129,0.15)] flex items-center justify-center gap-1.5 shrink-0"
-              >
-                <span>📋</span> {copied ? "Relatório Copiado" : "Copiar Relatório"}
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={handleReset}
+                  disabled={resetting}
+                  title="Apaga o histórico e redefine a banca com o saldo real atual"
+                  className="text-xs font-bold bg-gray-900 hover:bg-red-500/10 border border-gray-800 hover:border-red-500/30 disabled:opacity-50 text-gray-400 hover:text-red-400 px-4 py-2.5 rounded-xl transition-all flex items-center justify-center gap-1.5"
+                >
+                  <span>🔄</span> {resetting ? "Resetando..." : "Resetar"}
+                </button>
+                <button
+                  onClick={handleCopyReport}
+                  disabled={filtered.length === 0}
+                  className="text-xs font-bold bg-green-500 hover:bg-green-400 disabled:bg-gray-800 text-black disabled:text-gray-500 px-4 py-2.5 rounded-xl transition-all shadow-[0_4px_15px_rgba(16,185,129,0.15)] flex items-center justify-center gap-1.5"
+                >
+                  <span>📋</span> {copied ? "Relatório Copiado" : "Copiar Relatório"}
+                </button>
+              </div>
             </div>
 
             {/* Pill Filters Bar */}
@@ -358,7 +487,7 @@ export default function InicioPage() {
               <div className="space-y-2">
                 <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest block">Plataforma</span>
                 <div className="flex flex-wrap gap-1.5">
-                  {(["TODOS", "BLAZE", "JONBET"] as const).map((p) => (
+                  {platformOptions.map((p) => (
                     <button
                       key={p}
                       onClick={() => setFilterPlatform(p)}
@@ -368,7 +497,7 @@ export default function InicioPage() {
                           : "bg-gray-900 border-gray-800 text-gray-400 hover:text-white"
                       }`}
                     >
-                      {p === "TODOS" ? "Todas" : p}
+                      {p === "TODOS" ? "Todas" : p === "IQOPTION" ? "IQ Option" : p}
                     </button>
                   ))}
                 </div>
@@ -378,7 +507,7 @@ export default function InicioPage() {
               <div className="space-y-2">
                 <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest block">Jogo</span>
                 <div className="flex flex-wrap gap-1.5">
-                  {(["TODOS", "DOUBLE", "CRASH", "FORTUNE", "BACBO"] as const).map((g) => (
+                  {gameOptions.map((g) => (
                     <button
                       key={g}
                       onClick={() => setFilterGame(g)}
@@ -388,7 +517,19 @@ export default function InicioPage() {
                           : "bg-gray-900 border-gray-800 text-gray-400 hover:text-white"
                       }`}
                     >
-                      {g === "TODOS" ? "Todos" : g === "FORTUNE" ? "Fortune" : g}
+                      {g === "TODOS"
+                        ? "Todos"
+                        : g === "FORTUNE"
+                          ? "Fortune"
+                          : g === "ROLETA"
+                            ? "Mega Roulette - Brazilian"
+                            : g === "BACBO_LIVE"
+                              ? "Bac Bo Ao Vivo"
+                              : g === "BACBO"
+                                ? "Bac Bo"
+                                : g === "DAY_TRADE"
+                                  ? "Day Trade"
+                                  : g}
                     </button>
                   ))}
                 </div>
@@ -431,11 +572,17 @@ export default function InicioPage() {
                   <div key={e.id} className="flex items-center justify-between bg-gray-950/80 border border-gray-850 hover:border-gray-800 rounded-xl px-4 py-3.5 transition-all">
                     <div className="space-y-1">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className={`text-[9px] uppercase font-black px-2 py-0.5 rounded ${(e.platform || "").toUpperCase() === "BLAZE" ? "bg-red-500/15 text-red-400" : "bg-blue-500/15 text-blue-400"}`}>
-                          {e.platform}
+                        <span className={`text-[9px] uppercase font-black px-2 py-0.5 rounded ${
+                          (e.platform || "").toUpperCase() === "BLAZE"
+                            ? "bg-red-500/15 text-red-400"
+                            : (e.platform || "").toUpperCase() === "IQOPTION"
+                              ? "bg-emerald-500/15 text-emerald-400"
+                              : "bg-blue-500/15 text-blue-400"
+                        }`}>
+                          {(e.platform || "").toUpperCase() === "IQOPTION" ? "IQ Option" : e.platform}
                         </span>
                         <span className="text-[9px] uppercase font-black px-2 py-0.5 rounded bg-gray-800 text-gray-300">
-                          {game}
+                          {game === "DAY_TRADE" ? "Day Trade" : game}
                         </span>
                         <span className={`text-[9px] uppercase font-black px-2 py-0.5 rounded ${isWin ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
                           {e.type}

@@ -28,6 +28,8 @@ $navLinks = [
     ['href' => '/inicio', 'label' => 'Início', 'icon' => '🏠', 'platform' => null, 'feature' => null],
     ['href' => '/conta', 'label' => 'Conta Blaze', 'icon' => '🔑', 'platform' => 'blaze', 'feature' => 'conta_blaze'],
     ['href' => '/jonbet', 'label' => 'Conta Jonbet', 'icon' => '🔑', 'platform' => 'jonbet', 'feature' => 'conta_jonbet'],
+    ['href' => '/day-trade', 'label' => 'Day Trade', 'icon' => '📈', 'platform' => 'daytrade', 'feature' => null],
+    ['href' => '/premium-day-trade', 'label' => 'Premium Day Trade', 'icon' => '💎', 'platform' => 'daytrade', 'feature' => null],
     ['href' => '/premium', 'label' => 'Premium Blaze', 'icon' => '💎', 'platform' => 'blaze', 'feature' => 'premium_blaze'],
     ['href' => '/premium-jonbet', 'label' => 'Premium Jonbet', 'icon' => '💎', 'platform' => 'jonbet', 'feature' => 'premium_jonbet'],
     ['href' => '/jogos-premium', 'label' => 'Jogos Ao Vivo', 'icon' => '💎', 'platform' => 'blaze', 'feature' => 'premium_bacbo'],
@@ -353,13 +355,20 @@ function aw_render_nav_links(array $links, string $currentPath, bool $mobile = f
     } catch (e) { return true; }
   }
 
+  function platformLabel(p) {
+    if (p === 'blaze') return 'Blaze';
+    if (p === 'jonbet') return 'Jonbet';
+    if (p === 'daytrade') return 'Day Trade';
+    return p || '';
+  }
+
   function applyLinkLockState(link, platform, feature) {
     var platformLocked = !!activePlatform && !!platform && platform !== activePlatform;
     var licenseLocked = !!feature && !licenseActive;
     var featureLocked = !!feature && licenseActive && !hasFeature(feature);
     var locked = platformLocked || licenseLocked || featureLocked;
     var reason = platformLocked
-      ? ('Pare o bot da ' + (activePlatform === 'blaze' ? 'Blaze' : 'Jonbet') + ' para acessar')
+      ? ('Pare o bot da ' + platformLabel(activePlatform) + ' para acessar')
       : licenseLocked ? 'Licença expirada — renove em Licença'
       : featureLocked ? 'Não incluído no seu plano — veja Licença' : '';
     var iconEl = link.querySelector('.aw-nav-icon');
@@ -447,7 +456,12 @@ function aw_render_nav_links(array $links, string $currentPath, bool $mobile = f
   function refreshState() {
     fetch('/api/user/me').then(function (r) { return r.ok ? r.json() : null; }).then(function (data) {
       if (!data) return;
-      activePlatform = data.isActive ? 'blaze' : (data.jonbetIsActive ? 'jonbet' : null);
+      // Plataforma com bot online (só uma por vez) — trava as outras abas
+      activePlatform = data.isActive
+        ? 'blaze'
+        : (data.jonbetIsActive
+          ? 'jonbet'
+          : (data.daytradeIsActive ? 'daytrade' : null));
       planInfo = { isTesting: !!data.isTesting, features: data.features || null, isAdminAccount: !!data.isAdminAccount };
       // Aceita string "a,b" ou array (defensivo)
       if (Array.isArray(data.hiddenTabs)) {
@@ -469,7 +483,7 @@ function aw_render_nav_links(array $links, string $currentPath, bool $mobile = f
         var locked = !!activePlatform && !!platform && platform !== activePlatform;
         link.classList.toggle('opacity-40', locked);
         link.classList.toggle('pointer-events-none', locked);
-        link.title = locked ? ('Pare o bot da ' + (activePlatform === 'blaze' ? 'Blaze' : 'Jonbet') + ' para acessar') : '';
+        link.title = locked ? ('Pare o bot da ' + platformLabel(activePlatform) + ' para acessar') : '';
       });
       applyHiddenTabs();
       maybeShowTrialOffer(data);

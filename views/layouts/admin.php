@@ -25,6 +25,7 @@ $adminLinks = [
     ['href' => '/financeiro', 'label' => 'Planos e Gateway', 'icon' => '💳', 'nav' => 'financeiro'],
     ['href' => '/comunicacao', 'label' => 'Comunicação', 'icon' => '📢', 'nav' => 'comunicacao'],
     ['href' => '/sistema', 'label' => 'Sistema', 'icon' => '🛠️', 'nav' => 'sistema'],
+    ['href' => '/proxy', 'label' => 'Proxy', 'icon' => '🌐', 'nav' => 'proxy'],
     ['href' => '/configuracoes', 'label' => 'Configurações', 'icon' => '⚙️', 'nav' => 'config'],
 ];
 $clientLinks = [

@@ -167,12 +167,18 @@ final class PatternAccuracy
     }
 
     /** @return array{hits:int,total:int,pct:float}|null */
-    public static function computeBacBo(array $sequence, string $target, int $gales = 0, int $days = 7): ?array
-    {
+    public static function computeBacBo(
+        array $sequence,
+        string $target,
+        int $gales = 0,
+        int $days = 7,
+        string $resultsTable = 'bacbo_results'
+    ): ?array {
         try {
+            $table = preg_match('/^bacbo(_live)?_results$/', $resultsTable) ? $resultsTable : 'bacbo_results';
             $since = date('Y-m-d H:i:s', time() - $days * 86400);
             $rows = Database::fetchAll(
-                'SELECT winner FROM bacbo_results WHERE createdAt >= ? ORDER BY id ASC',
+                'SELECT winner FROM ' . $table . ' WHERE createdAt >= ? ORDER BY id ASC',
                 [$since]
             );
             $outcomes = array_map(
@@ -229,10 +235,11 @@ final class PatternAccuracy
         string $target,
         int $gales = 0,
         int $timeoutMs = 3000,
-        int $days = 7
+        int $days = 7,
+        string $resultsTable = 'bacbo_results'
     ): ?array {
         unset($timeoutMs);
-        return self::computeBacBo($sequence, $target, $gales, $days);
+        return self::computeBacBo($sequence, $target, $gales, $days, $resultsTable);
     }
 
     /** @return list<array{crashPoint?:float,color?:int,createdAt:string}> */

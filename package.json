@@ -17,9 +17,12 @@
     "esbuild": "^0.28.1"
   },
   "dependencies": {
+    "https-proxy-agent": "^9.1.0",
     "puppeteer-core": "^25.3.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "socks-proxy-agent": "^10.1.0",
+    "ssh2": "^1.17.0",
     "telegram": "^2.26.22",
     "ws": "^8.21.0"
   }

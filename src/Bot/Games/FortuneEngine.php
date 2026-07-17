@@ -11,6 +11,7 @@ use App\Bot\Jonbet\JonbetPoller;
 use App\Database;
 use App\Models\UserRepository;
 use App\Services\BotCommandService;
+use App\Services\Notify;
 
 /** Motor Fortune Double — mesma lógica de cores do Double, sala fortune. */
 final class FortuneEngine
@@ -179,6 +180,7 @@ final class FortuneEngine
                 $this->api->betFortune(self::COLOR_ID[$signal] ?? 1, $amount);
             }
             $this->msg("🎯 Fortune: *{$signal}* R$ " . number_format($amount, 2, '.', '') . ($this->lastPattern !== '' ? " | 📋 {$this->lastPattern}" : ''));
+            Notify::notifyUser($this->userId, 'entrada', "Entrando: {$signal} — R$ " . number_format($amount, 2, '.', ''), 'Fortune', $this->platform);
         } catch (\Throwable $e) {
             $this->betInFlight = false;
             UserRepository::update($this->userId, [($this->platform === 'JONBET' ? 'jonbetIsBetting' : 'isBetting') => 0]);
@@ -228,6 +230,7 @@ final class FortuneEngine
                 'balance' => $bal,
             ], 'ownerId = :oid', ['oid' => $this->userId]);
             $this->msg("✅ *WIN* Fortune — {$result}\nLucro: R$ " . number_format($profit, 2, '.', ''));
+            Notify::notifyUser($this->userId, 'win', "WIN — {$result} | Lucro: R$ " . number_format($profit, 2, '.', ''), 'Fortune', $this->platform);
             \App\Bot\BotEntryLogger::log(
                 $this->userId,
                 'WIN',
@@ -238,7 +241,8 @@ final class FortuneEngine
                 $this->lastPattern !== '' ? $this->lastPattern : null,
                 $this->currentBet,
                 $roundProfit,
-                (int) ($vars['countMartingale'] ?? 0)
+                (int) ($vars['countMartingale'] ?? 0),
+                $this->isDemo ? 'DEMO' : 'REAL'
             );
         } else {
             $g = (int) $vars['countMartingale'] + 1;
@@ -261,7 +265,8 @@ final class FortuneEngine
                     $this->lastPattern !== '' ? $this->lastPattern : null,
                     $this->currentBet,
                     $roundProfit,
-                    $g
+                    $g,
+                    $this->isDemo ? 'DEMO' : 'REAL'
                 );
             } else {
                 Database::update($this->vt(), [
@@ -273,6 +278,7 @@ final class FortuneEngine
                     'balance' => $bal,
                 ], 'ownerId = :oid', ['oid' => $this->userId]);
                 $this->msg("❌ *LOSS* Fortune | Gales esgotados\nLucro: R$ " . number_format($profit, 2, '.', ''));
+                Notify::notifyUser($this->userId, 'loss', "LOSS — {$result} | Lucro: R$ " . number_format($profit, 2, '.', ''), 'Fortune', $this->platform);
                 \App\Bot\BotEntryLogger::log(
                     $this->userId,
                     'LOSS',
@@ -283,7 +289,8 @@ final class FortuneEngine
                     $this->lastPattern !== '' ? $this->lastPattern : null,
                     $this->currentBet,
                     $roundProfit,
-                    $g
+                    $g,
+                    $this->isDemo ? 'DEMO' : 'REAL'
                 );
             }
         }

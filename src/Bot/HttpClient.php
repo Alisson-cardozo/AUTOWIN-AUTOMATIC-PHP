@@ -95,12 +95,23 @@ final class HttpClient
             throw new \RuntimeException("HTTP error: $err");
         }
         $data = json_decode($raw, true);
+        if ($data === null && json_last_error() !== JSON_ERROR_NONE) {
+            // Alguns provedores (ex: casino.org) emitem \uXXXX de surrogate UTF-16
+            // desemparelhado em nomes de usuário — json_decode do PHP rejeita o
+            // payload inteiro nesse caso (outros parsers, como o do Python, toleram).
+            // Remove os escapes de surrogate quebrados e tenta de novo antes de desistir.
+            $sanitized = preg_replace('/\\\\u[dD][89abcdefABCDEF][0-9a-fA-F]{2}/', '', $raw);
+            $data = $sanitized !== null ? json_decode($sanitized, true) : null;
+        }
         if ($status >= 400) {
             $ex = new \RuntimeException("HTTP $status: $raw", $status);
             /** @phpstan-ignore-next-line */
             $ex->response = ['status' => $status, 'data' => $data, 'raw' => $raw];
             throw $ex;
         }
-        return is_array($data) ? $data : ['raw' => $raw];
+        if (!is_array($data)) {
+            throw new \RuntimeException('JSON decode falhou: ' . json_last_error_msg());
+        }
+        return $data;
     }
 }

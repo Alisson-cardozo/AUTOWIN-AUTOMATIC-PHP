@@ -14,4 +14,6 @@ final class EngineRegistry
     public static array $blazeApis = [];
     /** @var array<int, object> */
     public static array $jonbetApis = [];
+    /** @var array<int, object> */
+    public static array $daytrade = [];
 }

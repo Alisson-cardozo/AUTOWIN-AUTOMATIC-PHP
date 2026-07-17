@@ -4,9 +4,15 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Bot\HttpClient;
+
 /**
- * Chama o bridge Node/GramJS (bot/telegram-bridge.mjs),
+ * Chama o bridge Node/GramJS (bot/telegram-bridge.cjs),
  * espelhando o fluxo do auto-autowin telegram-userbot/route.ts.
+ *
+ * HTTP (BACBO_BRIDGE_URL configurado) fala com bot/server.cjs, necessário em
+ * hospedagens onde exec()/proc_open() do PHP estão desabilitados. Sem isso,
+ * cai no proc_open por chamada de sempre (local/VPS com exec liberado).
  */
 final class TelegramBridge
 {
@@ -16,6 +22,44 @@ final class TelegramBridge
      */
     public static function call(array $payload): array
     {
+        $bridgeUrl = (string) env('BACBO_BRIDGE_URL', '');
+        if ($bridgeUrl !== '') {
+            return self::callHttp($bridgeUrl, $payload);
+        }
+        return self::callProcess($payload);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private static function callHttp(string $bridgeUrl, array $payload): array
+    {
+        try {
+            $client = new HttpClient($bridgeUrl, 30);
+            $secret = (string) env('BACBO_BRIDGE_SECRET', '');
+            $headers = $secret !== '' ? ['x-bridge-secret' => $secret] : [];
+            $result = $client->post('/telegram', $payload, $headers);
+            return is_array($result) ? $result : ['ok' => false, 'error' => 'Resposta inválida do bridge Telegram (HTTP).'];
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'error' => 'Bridge Telegram (HTTP) falhou: ' . $e->getMessage()];
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private static function callProcess(array $payload): array
+    {
+        if (!function_exists('proc_open')) {
+            return [
+                'ok' => false,
+                'error' => 'proc_open() está desabilitado nesta hospedagem. Configure BACBO_BRIDGE_URL '
+                    . 'apontando para um "node bot/server.cjs" rodando à parte (veja bot/server.cjs).',
+            ];
+        }
+
         $script = base_path('bot/telegram-bridge.cjs');
         if (!is_file($script)) {
             // fallback legado

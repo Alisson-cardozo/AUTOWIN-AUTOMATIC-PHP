@@ -1,6 +1,27 @@
 import { useEffect, useState, useCallback } from "react"
 import { NumberField } from "@/components/ui/NumberField"
 
+// Sala: Bac Bo normal vs Ao Vivo (mesma UI; APIs e localStorage separados)
+type BacBoRoom = "bacbo" | "bacbo-live"
+function detectBacBoRoom(): BacBoRoom {
+  if (typeof window === "undefined") return "bacbo"
+  const path = window.location.pathname || ""
+  if (path.includes("premium-bacbo-live") || path.includes("bacbo-live")) return "bacbo-live"
+  const q = new URLSearchParams(window.location.search).get("room")
+  if (q === "live" || q === "bacbo-live") return "bacbo-live"
+  return "bacbo"
+}
+const BACBO_ROOM = detectBacBoRoom()
+const BACBO_RECENT_API =
+  BACBO_ROOM === "bacbo-live" ? "/api/game/bacbo-live/recent" : "/api/game/bacbo/recent"
+const BACBO_ESTRAT_API =
+  BACBO_ROOM === "bacbo-live" ? "/api/user/bacbo-live/estrategias" : "/api/user/bacbo/estrategias"
+const BACBO_PAGE_TITLE = BACBO_ROOM === "bacbo-live" ? "Bac Bo Ao Vivo" : "Bac Bo"
+const LS_PATTERNS_KEY =
+  BACBO_ROOM === "bacbo-live" ? "premium_bacbo_live_padrao_patterns_v2" : "premium_bacbo_padrao_patterns_v2"
+const LS_ACTIVE_KEY =
+  BACBO_ROOM === "bacbo-live" ? "premium_bacbo_live_active_patterns" : "premium_bacbo_active_patterns"
+
 // ─── Tipos ──────────────────────────────────────────────────────────────────
 interface BacBoResult {
   id: string
@@ -46,7 +67,7 @@ function toBR(iso: string) {
 
 async function fetchBacBoRecent(): Promise<{ results: BacBoResult[]; total: number; apiDown: boolean }> {
   try {
-    const res = await fetch("/api/game/bacbo/recent", { cache: "no-store" })
+    const res = await fetch(BACBO_RECENT_API, { cache: "no-store" })
     if (!res.ok) return { results: [], total: 0, apiDown: true }
     const data = await res.json()
     return { results: data.results ?? [], total: data.total ?? 0, apiDown: !!data.apiDown }
@@ -219,8 +240,8 @@ function HistoricoTab() {
 // ═══════════════════════════════════════════════════════════════════════════
 type SearchMode = "sequencia" | "soma" | "empate"
 
-const LS_PATTERNS = "premium_bacbo_padrao_patterns_v2"
-const LS_ACTIVE = "premium_bacbo_active_patterns"
+const LS_PATTERNS = LS_PATTERNS_KEY
+const LS_ACTIVE = LS_ACTIVE_KEY
 
 function loadPatternsForMode(mode: SearchMode): PatternResult[] {
   try {
@@ -276,7 +297,7 @@ function BuscarPadraoTab({ initialMode = "sequencia" as SearchMode }: { initialM
 
   useEffect(() => {
     const st = searchMode === "sequencia" ? "SEQUÊNCIA" : "SOMA"
-    fetch(`/api/user/bacbo/estrategias?strategyType=${encodeURIComponent(st)}`, { cache: "no-store" })
+    fetch(`${BACBO_ESTRAT_API}?strategyType=${encodeURIComponent(st)}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((list) => {
         if (!Array.isArray(list)) return
@@ -425,14 +446,14 @@ function BuscarPadraoTab({ initialMode = "sequencia" as SearchMode }: { initialM
     setSaving(key)
     try {
       const strategyType = searchMode === "sequencia" ? "SEQUÊNCIA" : "SOMA"
-      const res = await fetch("/api/user/bacbo/estrategias", {
+      const res = await fetch(BACBO_ESTRAT_API, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sequence: p.sequence,
           color: p.betOutcome,
           strategyType,
-          gameType: "BACBO",
+          gameType: BACBO_ROOM === "bacbo-live" ? "BACBO_LIVE" : "BACBO",
           platform: "BLAZE",
         }),
       })
@@ -754,7 +775,7 @@ export default function PremiumBacBoPage() {
       <div className="flex items-center gap-3">
         <span className="text-3xl">🎲</span>
         <div>
-          <h1 className="text-xl font-bold text-white">Premium Bac Bo</h1>
+          <h1 className="text-xl font-bold text-white">Premium {BACBO_PAGE_TITLE}</h1>
           <p className="text-xs text-gray-500">Histórico e busca de padrões (sequência, soma e empate)</p>
         </div>
       </div>

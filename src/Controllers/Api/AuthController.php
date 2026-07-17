@@ -69,18 +69,36 @@ final class AuthController
     {
         $user = Auth::requireUser();
         $hiddenTabs = \App\Models\ConfigRepository::get('HIDDEN_TABS', '') ?? '';
-        $hiddenGames = \App\Models\ConfigRepository::get('HIDDEN_GAMES', '') ?? '';
-        $hiddenStrategies = \App\Models\ConfigRepository::get('HIDDEN_STRATEGY_TYPES', '') ?? '';
 
-        // Se o jogo ativo do usuário foi ocultado pelo admin, troca pra um permitido
-        $hiddenGameList = array_values(array_filter(array_map('trim', explode(',', (string) $hiddenGames))));
-        $gameType = (string) ($user['gameType'] ?? 'DOUBLE');
-        $jonbetGameType = (string) ($user['jonbetGameType'] ?? 'DOUBLE');
-        $fallbackGames = ['DOUBLE', 'CRASH', 'FORTUNE', 'BACBO'];
-        if ($gameType !== '' && in_array($gameType, $hiddenGameList, true)) {
+        // Cada aba tem sua própria lista independente de jogos ocultos —
+        // ocultar um jogo em Conta Blaze não afeta Conta Jonbet/Premium/etc.
+        $parseHiddenList = static function (string $key, bool $forceCrash = false): array {
+            $raw = (string) (\App\Models\ConfigRepository::get($key, '') ?? '');
+            $list = array_values(array_filter(array_map('trim', explode(',', $raw))));
+            if ($forceCrash && !in_array('CRASH', $list, true)) {
+                $list[] = 'CRASH';
+            }
+            return $list;
+        };
+        $hiddenContaBlazeList = $parseHiddenList('HIDDEN_GAMES_CONTA_BLAZE', true);
+        $hiddenContaJonbetList = $parseHiddenList('HIDDEN_GAMES_CONTA_JONBET', true);
+        $hiddenPremiumBlazeList = $parseHiddenList('HIDDEN_GAMES_PREMIUM_BLAZE');
+        $hiddenPremiumJonbetList = $parseHiddenList('HIDDEN_GAMES_PREMIUM_JONBET');
+        $hiddenGamesContaBlaze = implode(',', $hiddenContaBlazeList);
+        $hiddenGamesContaJonbet = implode(',', $hiddenContaJonbetList);
+        $hiddenGamesPremiumBlaze = implode(',', $hiddenPremiumBlazeList);
+        $hiddenGamesPremiumJonbet = implode(',', $hiddenPremiumJonbetList);
+        $hiddenStrategies = \App\Models\ConfigRepository::get('HIDDEN_STRATEGY_TYPES', '') ?? '';
+        $hiddenLiveGames = (string) (\App\Models\ConfigRepository::get('HIDDEN_LIVE_GAMES', '') ?? '');
+
+        // Se o jogo ativo do usuário foi ocultado (ou era CRASH), troca pra um permitido
+        $gameType = strtoupper((string) ($user['gameType'] ?? 'DOUBLE'));
+        $jonbetGameType = strtoupper((string) ($user['jonbetGameType'] ?? 'DOUBLE'));
+        $fallbackGames = ['DOUBLE', 'FORTUNE', 'BACBO', 'BACBO_LIVE', 'ROLETA', 'DAY_TRADE'];
+        if ($gameType === 'CRASH' || ($gameType !== '' && in_array($gameType, $hiddenContaBlazeList, true))) {
             $next = 'DOUBLE';
             foreach ($fallbackGames as $g) {
-                if (!in_array($g, $hiddenGameList, true)) {
+                if (!in_array($g, $hiddenContaBlazeList, true)) {
                     $next = $g;
                     break;
                 }
@@ -91,10 +109,10 @@ final class AuthController
                 $user['gameType'] = $next;
             }
         }
-        if ($jonbetGameType !== '' && in_array($jonbetGameType, $hiddenGameList, true)) {
+        if ($jonbetGameType === 'CRASH' || ($jonbetGameType !== '' && in_array($jonbetGameType, $hiddenContaJonbetList, true))) {
             $next = 'DOUBLE';
-            foreach (['DOUBLE', 'CRASH', 'FORTUNE'] as $g) {
-                if (!in_array($g, $hiddenGameList, true)) {
+            foreach (['DOUBLE', 'FORTUNE'] as $g) {
+                if (!in_array($g, $hiddenContaJonbetList, true)) {
                     $next = $g;
                     break;
                 }
@@ -172,8 +190,15 @@ final class AuthController
             'jonbetGameType' => $jonbetGameType,
             'jonbetIsActive' => (bool) ($user['jonbetIsActive'] ?? false),
             'jonbetIsBetting' => (bool) ($user['jonbetIsBetting'] ?? false),
+            // Day Trade / IQ Option — trava menu lateral como Blaze/Jonbet
+            'daytradeIsActive' => (bool) ($user['daytradeIsActive'] ?? 0),
+            'daytradeIsBetting' => (bool) ($user['daytradeIsBetting'] ?? 0),
             'hiddenTabs' => $hiddenTabs,
-            'hiddenGames' => $hiddenGames,
+            'hiddenGamesContaBlaze' => $hiddenGamesContaBlaze,
+            'hiddenGamesContaJonbet' => $hiddenGamesContaJonbet,
+            'hiddenGamesPremiumBlaze' => $hiddenGamesPremiumBlaze,
+            'hiddenGamesPremiumJonbet' => $hiddenGamesPremiumJonbet,
+            'hiddenLiveGames' => $hiddenLiveGames,
             'hiddenStrategies' => $hiddenStrategies,
             'settings' => $normalizeSettings(is_array($user['settings'] ?? null) ? $user['settings'] : null),
             'variables' => $normalizeVars($this->demoSafeVariables(
@@ -185,6 +210,11 @@ final class AuthController
             // Bac Bo DEMO usa a mesma banca virtual R$ 1000 (não misturar com lixo de sessão)
             'bacBoVariables' => $normalizeVars($this->demoSafeVariables(
                 is_array($user['bacBoVariables'] ?? null) ? $user['bacBoVariables'] : null,
+                (string) ($user['accountType'] ?? 'DEMO')
+            )),
+            'bacBoLiveSettings' => $normalizeSettings(is_array($user['bacBoLiveSettings'] ?? null) ? $user['bacBoLiveSettings'] : null),
+            'bacBoLiveVariables' => $normalizeVars($this->demoSafeVariables(
+                is_array($user['bacBoLiveVariables'] ?? null) ? $user['bacBoLiveVariables'] : null,
                 (string) ($user['accountType'] ?? 'DEMO')
             )),
             'jonbetSettings' => $normalizeSettings(is_array($user['jonbetSettings'] ?? null) ? $user['jonbetSettings'] : null),

@@ -7,9 +7,10 @@ namespace App\Bot;
 use App\Bot\Blaze\BlazeAPI;
 use App\Bot\Blaze\BlazeAuth;
 use App\Bot\Games\BacBoEngine;
-use App\Bot\Games\CrashEngine;
+use App\Bot\Games\DayTradeEngine;
 use App\Bot\Games\DoubleEngine;
 use App\Bot\Games\FortuneEngine;
+use App\Bot\Games\MegaRouletteEngine;
 use App\Bot\Jonbet\JonbetAPI;
 use App\Bot\Jonbet\JonbetAuth;
 use App\Database;
@@ -41,9 +42,23 @@ final class EngineManager
         }
 
         EngineRegistry::$blazeApis[$userId] = $api;
-        $game = $user['gameType'] ?? 'DOUBLE';
+        $game = strtoupper((string) ($user['gameType'] ?? 'DOUBLE'));
+        // Crash removido do produto (Blaze + Jonbet)
+        if ($game === 'CRASH') {
+            $game = 'DOUBLE';
+            UserRepository::update($userId, ['gameType' => 'DOUBLE']);
+            log_msg("[blaze:{$userId}] gameType CRASH migrado para DOUBLE", 'bot');
+        }
+        if ($game === 'DAY_TRADE') {
+            BotCommandService::pushMessage(
+                $userId,
+                '📈 Day Trade ainda em desenvolvimento — motor de opções binárias em breve.',
+                'BLAZE'
+            );
+            log_msg("[blaze:{$userId}] start bloqueado: DAY_TRADE em breve", 'bot');
+            return;
+        }
         $engine = match ($game) {
-            'CRASH' => new CrashEngine($userId, $api, $isDemo, 'BLAZE', $forceReset),
             'FORTUNE' => new FortuneEngine($userId, $api, $isDemo, 'BLAZE', $forceReset),
             // Bac Bo: isDemo só pelo accountType do usuário.
             // Token ausente NÃO vira DEMO automaticamente (evita flip REAL↔DEMO no painel).
@@ -51,8 +66,17 @@ final class EngineManager
                 $userId,
                 $forceReset,
                 $api,
-                $isDemo
+                $isDemo,
+                'bacbo'
             ),
+            'BACBO_LIVE' => new BacBoEngine(
+                $userId,
+                $forceReset,
+                $api,
+                $isDemo,
+                'bacbo_live'
+            ),
+            'ROLETA' => new MegaRouletteEngine($userId, $forceReset, $api, $isDemo),
             default => new DoubleEngine($userId, $api, $isDemo, 'BLAZE', $forceReset),
         };
         EngineRegistry::$blaze[$userId] = $engine;
@@ -120,9 +144,14 @@ final class EngineManager
         }
 
         EngineRegistry::$jonbetApis[$userId] = $api;
-        $game = $user['jonbetGameType'] ?? 'DOUBLE';
+        $game = strtoupper((string) ($user['jonbetGameType'] ?? 'DOUBLE'));
+        // Crash removido do produto (Blaze + Jonbet)
+        if ($game === 'CRASH') {
+            $game = 'DOUBLE';
+            UserRepository::update($userId, ['jonbetGameType' => 'DOUBLE']);
+            log_msg("[jonbet:{$userId}] jonbetGameType CRASH migrado para DOUBLE", 'bot');
+        }
         $engine = match ($game) {
-            'CRASH' => new CrashEngine($userId, $api, $isDemo, 'JONBET', $forceReset),
             'FORTUNE' => new FortuneEngine($userId, $api, $isDemo, 'JONBET', $forceReset),
             default => new DoubleEngine($userId, $api, $isDemo, 'JONBET', $forceReset),
         };
@@ -265,15 +294,20 @@ final class EngineManager
                     continue;
                 }
                 match ($action) {
-                    'start' => $platform === 'JONBET'
-                        ? self::startJonbet($user, false)
-                        : self::startBlaze($user, false),
-                    'stop' => $platform === 'JONBET'
-                        ? self::stopJonbet($userId)
-                        : self::stopBlaze($userId),
+                    'start' => match ($platform) {
+                        'JONBET' => self::startJonbet($user, false),
+                        'DAYTRADE' => self::startDayTrade($user, false),
+                        default => self::startBlaze($user, false),
+                    },
+                    'stop' => match ($platform) {
+                        'JONBET' => self::stopJonbet($userId),
+                        'DAYTRADE' => self::stopDayTrade($userId),
+                        default => self::stopBlaze($userId),
+                    },
                     'refresh-cache' => self::refresh($userId, $platform),
                     'connect-blaze' => self::connectBlaze($userId, (string) ($payload['email'] ?? ''), (string) ($payload['password'] ?? '')),
                     'connect-jonbet' => self::connectJonbet($userId, (string) ($payload['email'] ?? ''), (string) ($payload['password'] ?? '')),
+                    'connect-iqoption' => self::connectIqOption($userId, (string) ($payload['email'] ?? ''), (string) ($payload['password'] ?? '')),
                     default => null,
                 };
                 BotCommandService::mark($id, 'done');
@@ -293,13 +327,159 @@ final class EngineManager
                         'jonbetConnectError' => 'Erro interno ao conectar: ' . $e->getMessage(),
                     ]);
                 }
+                if ($action === 'connect-iqoption') {
+                    UserRepository::update($userId, [
+                        'daytradeConnectPending' => 0,
+                        'daytradeConnectError' => 'Erro interno ao conectar: ' . $e->getMessage(),
+                    ]);
+                }
             }
         }
     }
 
+    public static function connectIqOption(int $userId, string $email, string $password): void
+    {
+        log_msg("[connect] iqoption start user={$userId}", 'daytrade');
+        $res = \App\Services\IqOptionBridge::login($email, $password);
+        if (empty($res['ok']) || empty($res['ssid'])) {
+            $err = (string) ($res['error'] ?? 'Login IQ Option falhou');
+            // Mensagens amigáveis para erros comuns da API
+            $code = (string) ($res['code'] ?? '');
+            if (stripos($err, 'invalid_credentials') !== false || $code === 'invalid_credentials') {
+                $err = 'Email ou senha da IQ Option incorretos.';
+            } elseif (stripos($err, '2fa') !== false || stripos($err, 'two_factor') !== false) {
+                $err = 'Conta com 2FA. Desative a verificação em 2 etapas na IQ Option ou use app password se disponível.';
+            }
+            UserRepository::update($userId, [
+                'daytradeConnectPending' => 0,
+                'daytradeConnectError' => $err,
+                'iqSsid' => null,
+                'iqBalanceId' => null,
+            ]);
+            BotCommandService::pushMessage($userId, '❌ IQ Option: ' . $err, 'DAYTRADE');
+            log_msg("[connect] iq fail user={$userId}: {$err}", 'daytrade');
+            return;
+        }
+        $ssid = (string) $res['ssid'];
+        $balances = is_array($res['balances'] ?? null) ? $res['balances'] : [];
+        // Se login não trouxe balances, tenta de novo (force, sem cache)
+        if (!$balances) {
+            $b2 = \App\Services\IqOptionBridge::balances($ssid, true);
+            if (!empty($b2['ok']) && is_array($b2['balances'] ?? null)) {
+                $balances = $b2['balances'];
+            } else {
+                log_msg(
+                    '[connect] iq balances empty user=' . $userId . ' err=' . (string) ($b2['error'] ?? 'n/a'),
+                    'daytrade'
+                );
+            }
+        }
+        $u = UserRepository::find($userId);
+        $accountType = strtoupper((string) ($u['iqAccountType'] ?? 'DEMO'));
+        if (!in_array($accountType, ['DEMO', 'REAL'], true)) {
+            $accountType = 'DEMO';
+        }
+        $chosen = \App\Controllers\Api\DayTradeController::pickBalance($balances, $accountType, false);
+        $bal = (float) ($chosen['amount'] ?? 0);
+        $balId = (int) ($chosen['id'] ?? 0);
+        $currency = (string) ($chosen['currency'] ?? 'USD');
+        // se pediu REAL mas só veio practice, não inventa saldo
+        $matchedType = $chosen ? (int) ($chosen['type'] ?? 0) : 0;
+        $isPractice = $matchedType === 4 || $matchedType === 2;
+        if ($accountType === 'REAL' && $chosen && $isPractice) {
+            log_msg("[connect] iq REAL requested but only practice balance found user={$userId}", 'daytrade');
+        }
+        UserRepository::update($userId, [
+            'iqEmail' => $email,
+            'iqPassword' => $password,
+            'iqSsid' => $ssid,
+            'iqAccountType' => $accountType,
+            'iqBalanceId' => $balId > 0 ? $balId : null,
+            'daytradeConnectPending' => 0,
+            'daytradeConnectError' => null,
+        ]);
+        try {
+            // Nunca deixa o placeholder 10000 se ainda não sincronizou de verdade
+            if ($balId > 0) {
+                $existing = Database::fetch('SELECT * FROM daytrade_variables WHERE ownerId = ?', [$userId]);
+                $modeChanged = strtoupper((string) ($existing['firstBalanceMode'] ?? '')) !== $accountType;
+                $payload = [
+                    'balance' => $bal,
+                    'firstBalanceMode' => $accountType,
+                ];
+                // âncora de banca (relatório início) ao conectar ou trocar DEMO/REAL
+                if ($modeChanged || empty($existing['firstBalanceDate']) || (float) ($existing['firstBalance'] ?? 0) <= 0) {
+                    $payload['firstBalance'] = $bal;
+                    $payload['firstBalanceDate'] = now();
+                    $payload['monthStartBalance'] = $bal;
+                    $payload['monthStartDate'] = now();
+                    $payload['profit'] = 0;
+                } else {
+                    // mantém firstBalance; só atualiza saldo ao vivo
+                    $payload['firstBalance'] = (float) ($existing['firstBalance'] ?? $bal);
+                }
+                Database::update('daytrade_variables', $payload, 'ownerId = :oid', ['oid' => $userId]);
+            } else {
+                Database::update('daytrade_variables', [
+                    'balance' => 0,
+                ], 'ownerId = :oid', ['oid' => $userId]);
+            }
+        } catch (\Throwable $e) {
+            log_msg('[connect] iq vars update fail: ' . $e->getMessage(), 'daytrade');
+        }
+        $label = $accountType === 'REAL' ? 'REAL' : 'DEMO';
+        $msg = $balId > 0
+            ? "✅ IQ Option conectada ({$label}) · {$currency} " . number_format($bal, 2, '.', '')
+            : "✅ IQ Option conectada ({$label}) · saldo ainda não sincronizado — clique em Atualizar saldo";
+        BotCommandService::pushMessage($userId, $msg, 'DAYTRADE');
+        log_msg("[connect] iq ok user={$userId} type={$accountType} bal={$bal} balId={$balId} nBal=" . count($balances), 'daytrade');
+    }
+
+    public static function startDayTrade(array $user, bool $preserveState = false): void
+    {
+        $userId = (int) $user['id'];
+        self::stopDayTrade($userId, false);
+        UserRepository::ensureDayTradeDefaults($userId);
+        if (empty($user['iqSsid'])) {
+            BotCommandService::pushMessage($userId, '⚠️ Conecte a conta IQ Option antes de iniciar.', 'DAYTRADE');
+            return;
+        }
+        $engine = new DayTradeEngine($userId, !$preserveState);
+        EngineRegistry::$daytrade[$userId] = $engine;
+        $engine->start();
+        UserRepository::update($userId, ['daytradeIsActive' => 1]);
+    }
+
+    public static function stopDayTrade(int $userId, bool $updateDb = true): bool
+    {
+        $stoppedImmediately = true;
+        if (isset(EngineRegistry::$daytrade[$userId])) {
+            $eng = EngineRegistry::$daytrade[$userId];
+            if (method_exists($eng, 'requestStop') && !$eng->requestStop()) {
+                $stoppedImmediately = false;
+            } else {
+                if (method_exists($eng, 'stop')) {
+                    $eng->stop();
+                }
+                unset(EngineRegistry::$daytrade[$userId]);
+            }
+        }
+        if ($updateDb && $stoppedImmediately) {
+            UserRepository::update($userId, [
+                'daytradeIsActive' => 0,
+                'daytradeIsBetting' => 0,
+            ]);
+        }
+        return $stoppedImmediately;
+    }
+
     private static function refresh(int $userId, string $platform): void
     {
-        $map = $platform === 'JONBET' ? EngineRegistry::$jonbet : EngineRegistry::$blaze;
+        $map = match ($platform) {
+            'JONBET' => EngineRegistry::$jonbet,
+            'DAYTRADE' => EngineRegistry::$daytrade,
+            default => EngineRegistry::$blaze,
+        };
         if (isset($map[$userId]) && method_exists($map[$userId], 'refreshCache')) {
             $map[$userId]->refreshCache();
         }
@@ -334,6 +514,21 @@ final class EngineManager
                 }
             }
         }
+        try {
+            $rows = Database::fetchAll('SELECT id FROM users WHERE daytradeIsActive = 1');
+            foreach ($rows as $r) {
+                $user = UserRepository::findWithRelations((int) $r['id']);
+                if ($user) {
+                    try {
+                        self::startDayTrade($user, true);
+                    } catch (\Throwable $e) {
+                        log_msg('[resume daytrade] ' . $e->getMessage(), 'bot');
+                    }
+                }
+            }
+        } catch (\Throwable) {
+            // coluna pode não existir ainda
+        }
     }
 
     public static function tickAll(): void
@@ -353,6 +548,15 @@ final class EngineManager
                     $eng->tick();
                 } catch (\Throwable $e) {
                     log_msg('[tick jonbet] ' . $e->getMessage(), 'bot');
+                }
+            }
+        }
+        foreach (EngineRegistry::$daytrade as $eng) {
+            if (method_exists($eng, 'tick')) {
+                try {
+                    $eng->tick();
+                } catch (\Throwable $e) {
+                    log_msg('[tick daytrade] ' . $e->getMessage(), 'bot');
                 }
             }
         }

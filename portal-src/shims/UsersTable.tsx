@@ -168,6 +168,7 @@ export function UsersTable({ users, plans = [], showActions = false }: UsersTabl
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [stoppingId, setStoppingId] = useState<number | null>(null)
   const [revokingId, setRevokingId] = useState<number | null>(null)
+  const [resettingBalanceId, setResettingBalanceId] = useState<number | null>(null)
   const [modalUser, setModalUser]   = useState<User | null>(null)
 
   async function handleDelete(id: number) {
@@ -198,6 +199,18 @@ export function UsersTable({ users, plans = [], showActions = false }: UsersTabl
       body: JSON.stringify({ userId: id }),
     })
     setRevokingId(null)
+    window.location.reload()
+  }
+
+  async function handleResetBalance(id: number, name: string | null) {
+    if (!confirm(`Resetar apenas a banca de ${name ?? "esse usuário"} com o saldo REAL atual?\n\nO histórico de WIN/LOSS não é apagado.`)) return
+    setResettingBalanceId(id)
+    await fetch("/api/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, action: "reset-balance" }),
+    })
+    setResettingBalanceId(null)
     window.location.reload()
   }
 
@@ -318,6 +331,14 @@ export function UsersTable({ users, plans = [], showActions = false }: UsersTabl
                               className="bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-400 border border-yellow-500/20 hover:border-yellow-400/40 px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all duration-300 disabled:opacity-50"
                             >
                               Tirar Acesso
+                            </button>
+                            <button
+                              onClick={() => handleResetBalance(user.id, user.name)}
+                              disabled={resettingBalanceId === user.id}
+                              title="Reseta só a banca (saldo REAL atual) — mantém o histórico de WIN/LOSS"
+                              className="bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/20 hover:border-purple-400/40 px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all duration-300 disabled:opacity-50"
+                            >
+                              {resettingBalanceId === user.id ? "..." : "Resetar Banca"}
                             </button>
                             <button
                               onClick={() => handleDelete(user.id)}

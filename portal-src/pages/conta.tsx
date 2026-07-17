@@ -42,6 +42,7 @@ interface Settings {
   whiteEntryValue: number
   whiteEntryPercent: number
   quantityCycles: number
+  columnReps?: number
   skipFirstEntry: boolean
   skipEntryAfterLoss: boolean
 }
@@ -429,10 +430,152 @@ function LiveGamePanel({ gameType }: { gameType: string }) {
   return (
     <>
       <div className={gameType === "DOUBLE"  ? "" : "hidden"}><LiveDoublePanel /></div>
-      <div className={gameType === "CRASH"   ? "" : "hidden"}><LiveCrashPanel /></div>
+
       <div className={gameType === "FORTUNE" ? "" : "hidden"}><LiveFortunePanel /></div>
       <div className={gameType === "BACBO"   ? "" : "hidden"}><LiveBacBoPanel /></div>
+      <div className={gameType === "BACBO_LIVE" ? "" : "hidden"}>
+        <LiveBacBoPanel apiPath="/api/game/bacbo-live/recent" title="Bac Bo Ao Vivo" />
+      </div>
+      <div className={gameType === "ROLETA"  ? "" : "hidden"}><LiveMegaRoulettePanel /></div>
     </>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────
+   LIVE MEGA ROLETA PANEL (Blaze Auto Mega Roulette — Pragmatic Play)
+───────────────────────────────────────────────────────────── */
+interface MegaRouletteResult { id: string; created_at: string; roll: number; color: string }
+
+function RouletteBall({ roll, color, size = "md" }: { roll: number; color: string; size?: "sm" | "md" | "lg" }) {
+  const sz = size === "sm" ? "w-7 h-7 text-xs" : size === "lg" ? "w-11 h-11 text-base" : "w-9 h-9 text-sm"
+  // 0 / BRANCO = verde (igual mesa Blaze/Pragmatic) — não branco, senão some no fundo
+  const isZero = roll === 0 || color === "BRANCO"
+  const bg = isZero
+    ? "bg-emerald-500 text-white ring-1 ring-emerald-300/40"
+    : color === "VERMELHO"
+    ? "bg-red-600 text-white"
+    : "bg-gray-800 border border-gray-600 text-white"
+  return (
+    <div className={`${sz} ${bg} rounded-full flex items-center justify-center font-bold flex-shrink-0`}>
+      {roll}
+    </div>
+  )
+}
+
+function LiveMegaRoulettePanel() {
+  const [results, setResults] = useState<MegaRouletteResult[]>([])
+  const [current, setCurrent] = useState<MegaRouletteResult | null>(null)
+  const [pulse, setPulse] = useState(false)
+  const [total, setTotal] = useState(0)
+  const [apiDown, setApiDown] = useState(false)
+  const prevIdRef = useRef<string | null>(null)
+
+  async function fetchRecent() {
+    try {
+      const res = await fetch("/api/game/mega-roulette/recent", { cache: "no-store" })
+      if (!res.ok) { setApiDown(true); return }
+      const data = await res.json()
+      if (!data.results || !Array.isArray(data.results)) return
+      setApiDown(data.apiDown ?? false)
+      setTotal(data.total ?? 0)
+      if (data.results.length === 0) return
+      const newest = data.results[0]
+      if (newest.id !== prevIdRef.current) {
+        prevIdRef.current = newest.id
+        setPulse(true)
+        setTimeout(() => setPulse(false), 800)
+      }
+      setCurrent(newest)
+      // Histórico sem duplicar id; não repete o "último" duas vezes
+      const seen = new Set<string>()
+      const strip: MegaRouletteResult[] = []
+      for (const r of data.results as MegaRouletteResult[]) {
+        const id = String(r.id ?? "")
+        if (!id || seen.has(id)) continue
+        seen.add(id)
+        strip.push(r)
+        if (strip.length >= 48) break
+      }
+      setResults(strip)
+    } catch { setApiDown(true) }
+  }
+
+  useEffect(() => {
+    fetchRecent()
+    const iv = setInterval(fetchRecent, 1500)
+    return () => clearInterval(iv)
+  }, [])
+
+  const colorStyle = current
+    ? (current.roll === 0 || current.color === "BRANCO")
+      ? "text-emerald-300 bg-emerald-500/10 border-emerald-500/30"
+      : current.color === "VERMELHO"
+        ? "text-red-400 bg-red-500/10 border-red-500/20"
+        : "text-gray-300 bg-gray-700/30 border-gray-600/30"
+    : ""
+
+  const stats = results.reduce((acc, r) => {
+    if (r.color === "BRANCO") acc.white++
+    else if (r.color === "VERMELHO") acc.red++
+    else acc.black++
+    return acc
+  }, { red: 0, black: 0, white: 0 })
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 flex flex-col gap-6 h-full">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-semibold text-white">Mega Roulette - Brazilian — Ao Vivo</h2>
+          <p className="text-[11px] text-gray-500 mt-0.5">blaze.bet.br · mega-roulette---brazilian-287-287</p>
+          {total > 0 && <p className="text-xs text-gray-500 mt-0.5">{total} resultados salvos</p>}
+        </div>
+        {apiDown ? (
+          <span className="flex items-center gap-1.5 text-xs text-red-400">
+            <span className="w-2 h-2 rounded-full bg-red-400" />Offline
+          </span>
+        ) : (
+          <span className="flex items-center gap-1.5 text-xs text-green-400">
+            <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />Ao vivo
+          </span>
+        )}
+      </div>
+
+      {current ? (
+        <div className={`rounded-xl border p-4 flex flex-col items-center gap-2 transition-all duration-300 ${colorStyle} ${pulse ? "scale-105" : "scale-100"}`}>
+          <p className="text-xs font-medium opacity-70 uppercase tracking-widest">Último resultado</p>
+          <RouletteBall roll={current.roll} color={current.color} size="lg" />
+          <p className="text-lg font-bold tracking-wide">{current.color}</p>
+          <p className="text-xs opacity-50">#{current.roll}</p>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-gray-800 p-4 flex items-center justify-center h-32">
+          <div className="w-5 h-5 border-2 border-gray-600 border-t-emerald-400 rounded-full animate-spin" />
+        </div>
+      )}
+
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2">
+          <p className="text-red-400 text-lg font-bold">{stats.red}</p>
+          <p className="text-xs text-gray-500">Vermelho</p>
+        </div>
+        <div className="bg-gray-800 border border-gray-700 rounded-lg p-2">
+          <p className="text-gray-300 text-lg font-bold">{stats.black}</p>
+          <p className="text-xs text-gray-500">Preto</p>
+        </div>
+        <div className="bg-white/5 border border-white/10 rounded-lg p-2">
+          <p className="text-white text-lg font-bold">{stats.white}</p>
+          <p className="text-xs text-gray-500">Branco</p>
+        </div>
+      </div>
+
+      <div>
+        <p className="text-xs text-gray-500 mb-3 uppercase tracking-widest">Histórico recente</p>
+        <div className="flex flex-wrap gap-1.5">
+          {results.map((r) => <RouletteBall key={r.id} roll={r.roll} color={r.color} size="sm" />)}
+          {results.length === 0 && <p className="text-xs text-gray-600">Carregando histórico...</p>}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -488,7 +631,13 @@ function BacBoScoreChip({ result }: { result: BacBoResult }) {
   )
 }
 
-function LiveBacBoPanel() {
+function LiveBacBoPanel({
+  apiPath = "/api/game/bacbo/recent",
+  title = "Bac Bo",
+}: {
+  apiPath?: string
+  title?: string
+}) {
   const [results, setResults] = useState<BacBoResult[]>([])
   const [current, setCurrent] = useState<BacBoResult | null>(null)
   const [pulse, setPulse] = useState(false)
@@ -498,7 +647,7 @@ function LiveBacBoPanel() {
 
   async function fetchRecent() {
     try {
-      const res = await fetch("/api/game/bacbo/recent", { cache: "no-store" })
+      const res = await fetch(apiPath, { cache: "no-store" })
       if (!res.ok) { setApiDown(true); return }
       const data = await res.json()
       if (!data.results || !Array.isArray(data.results)) return
@@ -517,10 +666,11 @@ function LiveBacBoPanel() {
   }
 
   useEffect(() => {
+    prevIdRef.current = null
     fetchRecent()
     const iv = setInterval(fetchRecent, 5000)
     return () => clearInterval(iv)
-  }, [])
+  }, [apiPath])
 
   // Placar inclui o resultado atual + histórico
   const allForStats = current ? [current, ...results] : results
@@ -535,7 +685,7 @@ function LiveBacBoPanel() {
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 flex flex-col gap-6 h-full">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-base font-semibold text-white">Bac Bo — Ao Vivo</h2>
+          <h2 className="text-base font-semibold text-white">{title} — resultados</h2>
           {total > 0 && <p className="text-xs text-gray-500 mt-0.5">{total} resultados</p>}
         </div>
         {apiDown ? (
@@ -605,6 +755,64 @@ const TYPES_DOUBLE   = ["SEQUÊNCIA", "HORÁRIOS", "NÚMEROS", "COPIAR SALA DE S
 const TYPES_CRASH    = ["SEQUÊNCIA", "HORÁRIOS", "NÚMEROS", "COPIAR SALA DE SINAL"]
 const TYPES_FORTUNE  = ["SEQUÊNCIA", "HORÁRIOS"]
 const TYPES_BACBO    = ["SEQUÊNCIA", "SOMA", "COPIAR SALA DE SINAL"]
+const TYPES_ROLETA   = ["SEQUÊNCIA", "SEQUÊNCIA E VIZINHOS", "COLUNAS"]
+
+/** Ordem da roda europeia (vizinhos). */
+const EURO_WHEEL = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26]
+const EURO_RED = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36])
+
+function euroNeighbors(center: number, n: number): number[] {
+  const idx = EURO_WHEEL.indexOf(center)
+  if (idx < 0) return [center]
+  const out = new Set<number>([center])
+  const len = EURO_WHEEL.length
+  for (let i = 1; i <= n; i++) {
+    out.add(EURO_WHEEL[(idx - i + len) % len])
+    out.add(EURO_WHEEL[(idx + i) % len])
+  }
+  return Array.from(out).sort((a, b) => a - b)
+}
+
+function terminalNumbers(digit: number): number[] {
+  const d = ((digit % 10) + 10) % 10
+  const out: number[] = []
+  for (let n = 0; n <= 36; n++) {
+    if (n % 10 === d) out.push(n)
+  }
+  return out
+}
+
+function expandTerminalsWithNeighbors(digits: number[], n: number): number[] {
+  const out = new Set<number>()
+  for (const d of digits) {
+    for (const num of terminalNumbers(d)) {
+      for (const x of euroNeighbors(num, n)) out.add(x)
+    }
+  }
+  return Array.from(out).sort((a, b) => a - b)
+}
+
+function formatRoletaEntry(color: string): string {
+  const c = (color || "").trim()
+  if (c.startsWith("COR:")) return "Cor " + colorLabel(c.slice(4))
+  if (c.startsWith("NUM:")) return "Números " + c.slice(4)
+  if (c.startsWith("VIZ:")) {
+    const [num, neigh] = c.slice(4).split("@")
+    return `Nº ${num} + ${neigh || 0} viz.`
+  }
+  if (c.startsWith("TERM:")) {
+    const [terms, neigh] = c.slice(5).split("@")
+    return `Terminal ${terms} + ${neigh || 0} viz.`
+  }
+  return colorLabel(c)
+}
+
+// Padrão de Número (Premium) tem pelo menos um token numérico (roll exato)
+// misturado com cor curinga — usado pra separar dos padrões de Sequência
+// (só cor) no painel "Padrões Premium Selecionados".
+function isNumeroPattern(sequence: string): boolean {
+  return sequence.split(",").some(t => /^\d+$/.test(t))
+}
 
 // Normaliza entrada do usuário para o formato que o bot espera (UPPERCASE)
 function normalizeSeq(raw: string): string {
@@ -626,7 +834,7 @@ function colorLabel(c: string, gameType?: string) {
     if (c === "AMARELO")  return "💛 Amarelo"
     return c
   }
-  if (gameType === "BACBO") {
+  if (gameType === "BACBO" || gameType === "BACBO_LIVE") {
     if (c === "PLAYER") return "🔵 Player"
     if (c === "BANKER") return "🔴 Banker"
     if (c === "EMPATE") return "🟡 Empate"
@@ -642,13 +850,33 @@ function SeqBall({ item }: { item: string }) {
   if (item === "X") return (
     <div className="w-7 h-7 rounded-full bg-gray-600/60 border border-gray-500 flex items-center justify-center text-gray-300 text-xs font-bold flex-shrink-0">X</div>
   )
+  // Terminal T0–T9 (final do número na roleta)
+  const termM = String(item).toUpperCase().match(/^T(?:ERM)?([0-9])$/)
+  if (termM) {
+    return (
+      <div className="h-7 px-1.5 rounded-full bg-violet-600/30 border border-violet-500/50 flex items-center justify-center text-violet-200 text-[10px] font-bold flex-shrink-0" title={`Terminal ${termM[1]}`}>
+        T{termM[1]}
+      </div>
+    )
+  }
   const num = Number(item)
   if (!isNaN(num) && /^\d+$/.test(item)) {
+    // Roleta europeia 0–36; Double usa 0–14 (1–7 vermelho / 8–14 preto)
     const cls = num === 0
       ? "bg-white text-gray-900"
-      : num <= 7 ? "bg-red-600 text-white"
-      : "bg-gray-700 border border-gray-600 text-white"
-    return <div className={`w-7 h-7 rounded-full ${cls} flex items-center justify-center text-xs font-bold flex-shrink-0`}>{item}</div>
+      : num <= 14 && !EURO_RED.has(num) && num > 7
+        ? "bg-gray-700 border border-gray-600 text-white"
+        : EURO_RED.has(num) || (num >= 1 && num <= 7)
+          ? "bg-red-600 text-white"
+          : "bg-gray-700 border border-gray-600 text-white"
+    // Preferência europeia se 0–36
+    const euroCls = num === 0
+      ? "bg-emerald-500 text-white"
+      : EURO_RED.has(num)
+        ? "bg-red-600 text-white"
+        : "bg-gray-700 border border-gray-600 text-white"
+    const useEuro = num >= 0 && num <= 36
+    return <div className={`w-7 h-7 rounded-full ${useEuro ? euroCls : cls} flex items-center justify-center text-xs font-bold flex-shrink-0`}>{item}</div>
   }
   if (item === "VERMELHO") return <div className="w-7 h-7 rounded-full bg-red-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">V</div>
   if (item === "PRETO") return <div className="w-7 h-7 rounded-full bg-gray-700 border border-gray-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">P</div>
@@ -684,6 +912,15 @@ function SeqBall({ item }: { item: string }) {
         <span className="text-blue-400">{p === "XX" ? "P—" : `P${p[0]}+${p[1]}`}</span>
         <span className="text-gray-500">·</span>
         <span className="text-red-400">{b === "XX" ? "B—" : `B${b[0]}+${b[1]}`}</span>
+      </div>
+    )
+  }
+  // Texto mais longo (ex: nome de canal/estratégia Copiar Sala de Sinal) —
+  // pill de largura automática em vez de círculo fixo, senão o texto vaza.
+  if (item.length > 2) {
+    return (
+      <div className="h-7 px-2 rounded-full bg-gray-600 flex items-center justify-center text-gray-200 text-[11px] font-mono flex-shrink-0 whitespace-nowrap max-w-[10rem] truncate" title={item}>
+        {item}
       </div>
     )
   }
@@ -741,11 +978,15 @@ function recomputeFortunePattern(sorted: FortuneResult[], sequence: string, betC
 function recomputeDoublePattern(sorted: DoubleResult[], sequence: string, betColor: string, gales: number) {
   const seqColors = sequence.split(",")
   const seqLen = seqColors.length
+  // Padrão de Número (Premium) mistura número exato ("7") e cor curinga
+  // ("VERMELHO") no mesmo padrão — compara cada posição pelo tipo do token.
+  const matchesToken = (token: string, r: DoubleResult) =>
+    /^\d+$/.test(token) ? r.roll === parseInt(token, 10) : LIVE_COLOR_NAME[r.color] === token
   let occurrences = 0, wins = 0
   const galeWins = new Array(gales).fill(0)
   for (let i = seqLen; i < sorted.length - gales; i++) {
-    const seq = sorted.slice(i - seqLen, i).map(r => LIVE_COLOR_NAME[r.color]).join(",")
-    if (seq !== sequence) continue
+    const window = sorted.slice(i - seqLen, i)
+    if (!window.every((r, j) => matchesToken(seqColors[j], r))) continue
     occurrences++
     const nextColor = LIVE_COLOR_NAME[sorted[i].color]
     if (nextColor === betColor) {
@@ -787,7 +1028,7 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
   const [strategyType, setStrategyType] = useState("SEQUÊNCIA")
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [sequence, setSequence] = useState("")
-  const [betColor, setBetColor] = useState(() => (gameType === "BACBO" ? "PLAYER" : "VERMELHO"))
+  const [betColor, setBetColor] = useState(() => (gameType === "BACBO" || gameType === "BACBO_LIVE" ? "PLAYER" : "VERMELHO"))
   const [crashTarget, setCrashTarget] = useState("")
   const [crashNumInput, setCrashNumInput] = useState("")
   const [seqItems, setSeqItems] = useState<string[]>([])
@@ -796,9 +1037,17 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
   const [somaSide, setSomaSide] = useState<"PLAYER" | "BANKER" | "EMPATE">("PLAYER")
   const [somaScore, setSomaScore] = useState<number | "X">(4)
   const [somaAnyScore, setSomaAnyScore] = useState(false)
+  // Roleta — SEQUÊNCIA E VIZINHOS (entrada)
+  const [entryMode, setEntryMode] = useState<"cor" | "nums" | "viz" | "term">("cor")
+  const [entryNums, setEntryNums] = useState<number[]>([])
+  const [entryCenter, setEntryCenter] = useState(1)
+  const [entryNeighbors, setEntryNeighbors] = useState(1)
+  const [entryTerminals, setEntryTerminals] = useState<number[]>([1])
+  // Roleta — COLUNAS (repetições da mesma coluna)
+  const [colunasReps, setColunasReps] = useState(2)
   // HORÁRIOS
   const [startTime, setStartTime] = useState("")
-  const [horarioBetColor, setHorarioBetColor] = useState(() => (gameType === "BACBO" ? "PLAYER" : "VERMELHO"))
+  const [horarioBetColor, setHorarioBetColor] = useState(() => (gameType === "BACBO" || gameType === "BACBO_LIVE" ? "PLAYER" : "VERMELHO"))
   const [horarioCrashTarget, setHorarioCrashTarget] = useState("")
   const [showImport, setShowImport] = useState(false)
   const [importText, setImportText] = useState("")
@@ -823,10 +1072,22 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
   // compartilham `strategies`/`settings`) — só a URL base muda, os
   // parâmetros de query/corpo continuam os mesmos (campos extras que a rota
   // do Bac Bo não usa são simplesmente ignorados).
-  const isBacBo = gameType === "BACBO"
-  const estrategiasUrl = isBacBo ? "/api/user/bacbo/estrategias" : "/api/user/estrategias"
-  const configUrl = isBacBo ? "/api/user/bacbo/configuracoes" : "/api/user/configuracoes"
-  const allTypes = gameType === "CRASH" ? TYPES_CRASH : gameType === "FORTUNE" ? TYPES_FORTUNE : isBacBo ? TYPES_BACBO : TYPES_DOUBLE
+  const isBacBo = gameType === "BACBO" || gameType === "BACBO_LIVE"
+  const estrategiasUrl = gameType === "BACBO_LIVE"
+    ? "/api/user/bacbo-live/estrategias"
+    : gameType === "BACBO"
+      ? "/api/user/bacbo/estrategias"
+      : "/api/user/estrategias"
+  const configUrl = gameType === "BACBO_LIVE"
+    ? "/api/user/bacbo-live/configuracoes"
+    : gameType === "BACBO"
+      ? "/api/user/bacbo/configuracoes"
+      : "/api/user/configuracoes"
+  const allTypes = gameType === "CRASH" ? TYPES_CRASH
+    : gameType === "FORTUNE" ? TYPES_FORTUNE
+    : isBacBo ? TYPES_BACBO
+    : gameType === "ROLETA" ? TYPES_ROLETA
+    : TYPES_DOUBLE
 
   useEffect(() => {
     fetch("/api/user/public-config").then(r => r.json()).then(d => {
@@ -927,6 +1188,9 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
       const st: string = settings.strategyType ?? "SEQUÊNCIA"
       let resolved = allTypes.includes(st) ? st : "SEQUÊNCIA"
       if (typeof settings.martingale === "number") setMartingale(settings.martingale)
+      if (typeof settings.columnReps === "number" && settings.columnReps >= 2) {
+        setColunasReps(Math.max(2, Math.min(15, Math.round(settings.columnReps))))
+      }
       try {
         const sig = localStorage.getItem("premium_nav_signal_st")
         if (sig === "SEQUÊNCIA") { resolved = "SEQUÊNCIA"; localStorage.removeItem("premium_nav_signal_st") }
@@ -936,6 +1200,12 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
         .then((r) => r.json())
         .then((strats) => {
           setStrategies(Array.isArray(strats) ? strats : [])
+          // legado: se COLUNAS e não tem columnReps, pega da strategy salva
+          if (resolved === "COLUNAS" && !(typeof settings.columnReps === "number" && settings.columnReps >= 2)) {
+            const leg = (Array.isArray(strats) ? strats : [])[0]
+            const n = leg ? parseInt(String(leg.sequence).replace(/\D+/g, ""), 10) : 0
+            if (n >= 2) setColunasReps(Math.max(2, Math.min(15, n)))
+          }
           setLoaded(true)
         })
     })
@@ -1080,6 +1350,62 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
     setCrashNumInput("")
   }
 
+  /** COLUNAS: só salva repetições no settings — sem cadastrar estratégia */
+  async function saveColunasReps(n: number) {
+    const reps = Math.max(2, Math.min(15, n || 2))
+    setColunasReps(reps)
+    setAddError("")
+    try {
+      const res = await fetch(configUrl, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ columnReps: reps, strategyType: "COLUNAS" }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setAddError((data as { error?: string }).error ?? "Erro ao salvar repetições")
+      }
+    } catch {
+      setAddError("Erro ao salvar repetições")
+    }
+  }
+
+  async function addRoletaVizinhos(e: React.FormEvent) {
+    e.preventDefault()
+    setAddError("")
+    if (seqItems.length === 0) { setAddError("Monte a sequência do padrão."); return }
+    let entry = ""
+    if (entryMode === "cor") {
+      entry = "COR:" + betColor
+    } else if (entryMode === "nums") {
+      if (entryNums.length === 0) { setAddError("Escolha ao menos um número para entrar."); return }
+      entry = "NUM:" + [...entryNums].sort((a, b) => a - b).join(",")
+    } else if (entryMode === "viz") {
+      entry = `VIZ:${entryCenter}@${Math.max(0, Math.min(8, entryNeighbors))}`
+    } else {
+      if (entryTerminals.length === 0) { setAddError("Escolha ao menos um terminal (0–9)."); return }
+      entry = `TERM:${[...entryTerminals].sort((a, b) => a - b).join(",")}@${Math.max(0, Math.min(8, entryNeighbors))}`
+    }
+    setAdding(true)
+    const res = await fetch(estrategiasUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sequence: seqItems.join(","),
+        color: entry,
+        gameType,
+        strategyType: "SEQUÊNCIA E VIZINHOS",
+        platform: "BLAZE",
+      }),
+    })
+    const data = await res.json()
+    setAdding(false)
+    if (!res.ok) { setAddError(data.error ?? "Erro ao adicionar"); return }
+    setStrategies((prev) => [...prev, data])
+    setSeqItems([])
+    setEntryNums([])
+  }
+
   function deleteStrategy(id: number) {
     fetch(`${estrategiasUrl}?id=${id}`, { method: "DELETE" })
     setStrategies((prev) => prev.filter((s) => s.id !== id))
@@ -1095,6 +1421,7 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
   const availableTypes = allTypes.filter((t) => !hiddenTypes.includes(t))
   const isDouble  = gameType === "DOUBLE"
   const isFortune = gameType === "FORTUNE"
+  const isRoleta  = gameType === "ROLETA"
 
   return (
     <div className="space-y-5">
@@ -1127,7 +1454,7 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
         <>
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
             <h2 className="text-sm font-semibold text-white mb-3">Nova Sequência</h2>
-            {(isDouble || isFortune || isBacBo) ? (
+            {(isDouble || isFortune || isBacBo || isRoleta) ? (
               <form onSubmit={addStrategy} className="space-y-4">
                 <p className="text-xs text-gray-500">
                   Monte a sequência do resultado mais recente ao mais antigo.
@@ -1327,25 +1654,30 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
             </div>
           )}
 
-          {isDouble && premiumDoublePatterns.length > 0 && (
+          {isDouble && premiumDoublePatterns.filter(p => isNumeroPattern(p.sequence) === (strategyType === "NÚMEROS")).length > 0 && (
             <div className="space-y-2">
               <div className="flex items-center justify-between px-1">
                 <p className="text-yellow-400 text-xs font-bold uppercase tracking-wide">👑 Padrões Premium Selecionados</p>
-                <button onClick={() => { try { localStorage.removeItem("premium_double_active_patterns") } catch {} setPremiumDoublePatterns([]) }}
+                <button onClick={() => {
+                  const remaining = premiumDoublePatterns.filter(p => isNumeroPattern(p.sequence) !== (strategyType === "NÚMEROS"))
+                  try { localStorage.setItem("premium_double_active_patterns", JSON.stringify(remaining)) } catch {}
+                  setPremiumDoublePatterns(remaining)
+                }}
                   className="text-gray-600 hover:text-red-400 text-xs transition-colors">Limpar todos</button>
               </div>
-              {premiumDoublePatterns.map((p, i) => (
+              {premiumDoublePatterns.filter(p => isNumeroPattern(p.sequence) === (strategyType === "NÚMEROS")).map((p, i) => (
                 <div key={i} className="bg-yellow-500/5 border border-yellow-500/30 rounded-xl p-3">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1 flex-wrap">
-                        {p.sequence.split(",").map((c, j) => (
-                          <span key={j} className={`text-xs font-bold px-1.5 py-0.5 rounded ${
-                            c === "VERMELHO" ? "bg-red-600/30 text-red-300" :
-                            c === "PRETO"    ? "bg-gray-700 text-gray-300" :
-                                              "bg-white/10 text-gray-200"
-                          }`}>{c}</span>
-                        ))}
+                        {p.sequence.split(",").map((c, j) => {
+                          const n = /^\d+$/.test(c) ? parseInt(c, 10) : null
+                          const nColorNum = n === null ? null : n === 0 ? 0 : n <= 7 ? 1 : 2
+                          const cls = n !== null
+                            ? (nColorNum === 1 ? "bg-red-600/30 text-red-300" : nColorNum === 2 ? "bg-gray-700 text-gray-300" : "bg-white/10 text-gray-200")
+                            : (c === "VERMELHO" ? "bg-red-600/30 text-red-300" : c === "PRETO" ? "bg-gray-700 text-gray-300" : "bg-white/10 text-gray-200")
+                          return <span key={j} className={`text-xs font-bold px-1.5 py-0.5 rounded ${cls}`}>{n !== null ? n : c}</span>
+                        })}
                         <span className="text-gray-600 text-xs">→</span>
                         <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${p.betColorNum === 1 ? "bg-red-600/40 text-red-300" : "bg-gray-700 text-gray-200"}`}>
                           {p.betColor}
@@ -1359,7 +1691,7 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
                     </div>
                     <div className="flex flex-col items-end gap-1 flex-shrink-0">
                       <button onClick={() => {
-                        const next = premiumDoublePatterns.filter((_, idx) => idx !== i)
+                        const next = premiumDoublePatterns.filter(o => !(o.sequence === p.sequence && o.betColor === p.betColor))
                         try { localStorage.setItem("premium_double_active_patterns", JSON.stringify(next)) } catch {}
                         setPremiumDoublePatterns(next)
                       }} className="text-gray-600 hover:text-red-400 transition-colors text-sm leading-none">✕</button>
@@ -1439,7 +1771,7 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
                           return <SeqBall key={i} item={v} />
                         })}
                       </div>
-                      <p className="text-gray-400 text-xs">{(isDouble || isFortune || isBacBo) ? "Aposta:" : "Alvo:"} {(isDouble || isFortune || isBacBo) ? colorLabel(s.color, gameType) : `${parseFloat(s.color)}x`}</p>
+                      <p className="text-gray-400 text-xs">{(isDouble || isFortune || isBacBo || isRoleta) ? "Aposta:" : "Alvo:"} {(isDouble || isFortune || isBacBo || isRoleta) ? colorLabel(s.color, gameType) : `${parseFloat(s.color)}x`}</p>
                       {stat && (
                         <div className="flex gap-3 text-xs mt-1">
                           <span className="text-green-400">{stat.wins} direto</span>
@@ -1660,7 +1992,7 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-gray-400 mb-1">
-                        {(isDouble || isFortune || isBacBo) ? "Cor apostada" : "Ponto alvo"}
+                        {(isDouble || isFortune || isBacBo || isRoleta) ? "Cor apostada" : "Ponto alvo"}
                       </label>
                       {isBacBo ? (
                         <select value={horarioBetColor} onChange={(e) => setHorarioBetColor(e.target.value)}
@@ -1984,6 +2316,249 @@ function EstrategiasTab({ gameType }: { gameType: string }) {
                       <p className="text-gray-400 text-xs">Alvo: {s.color}x</p>
                     </div>
                     <button onClick={() => deleteStrategy(s.id)} className="text-gray-500 hover:text-red-400 transition-colors text-base leading-none ml-3 flex-shrink-0">✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {strategyType === "COLUNAS" && isRoleta && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-4">
+          <div>
+            <h2 className="text-sm font-semibold text-white mb-1">Repetição de Colunas</h2>
+            <p className="text-xs text-gray-500 leading-relaxed">
+              Coluna 1 = 1,4,7,10… · Coluna 2 = 2,5,8… · Coluna 3 = 3,6,9…
+              <br />
+              Escolha só quantas vezes a <strong className="text-gray-300">mesma coluna</strong> precisa repetir.
+              O bot faz o resto: entra nas <strong className="text-gray-300">outras duas</strong> automaticamente.
+              <br />
+              <span className="text-gray-600">Ex.: coluna 1 sai {colunasReps}× → aposta colunas 2 e 3. O 0 quebra a sequência.</span>
+            </p>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-400 mb-2">
+              Repetições da mesma coluna: <span className="text-white font-bold">{colunasReps}</span>
+            </label>
+            <input
+              type="range"
+              min={2}
+              max={10}
+              value={colunasReps}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10) || 2
+                setColunasReps(n)
+              }}
+              onMouseUp={(e) => saveColunasReps(parseInt((e.target as HTMLInputElement).value, 10) || 2)}
+              onTouchEnd={(e) => saveColunasReps(parseInt((e.target as HTMLInputElement).value, 10) || 2)}
+              className="w-full"
+            />
+            <div className="flex justify-between text-[10px] text-gray-600 mt-1">
+              <span>2×</span><span>5×</span><span>10×</span>
+            </div>
+          </div>
+          <div className="bg-emerald-500/10 border border-emerald-500/25 rounded-xl p-3 text-xs text-gray-300 space-y-1.5">
+            <p className="font-semibold text-emerald-400">Ativo agora · {colunasReps}×</p>
+            <p>• Últimos <span className="text-white">{colunasReps}</span> na <span className="text-white">coluna 1</span> → entra em <span className="text-white">2 + 3</span></p>
+            <p>• Últimos <span className="text-white">{colunasReps}</span> na <span className="text-white">coluna 2</span> → entra em <span className="text-white">1 + 3</span></p>
+            <p>• Últimos <span className="text-white">{colunasReps}</span> na <span className="text-white">coluna 3</span> → entra em <span className="text-white">1 + 2</span></p>
+            <p className="text-gray-500 pt-1">Não precisa adicionar nada — só escolher as repetições e ligar o bot.</p>
+          </div>
+          {addError && <p className="text-red-400 text-xs">{addError}</p>}
+        </div>
+      )}
+
+      {strategyType === "SEQUÊNCIA E VIZINHOS" && isRoleta && (
+        <>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+            <h2 className="text-sm font-semibold text-white mb-1">Sequência + Entrada (Vizinhos / Terminais)</h2>
+            <p className="text-xs text-gray-500 mb-4">
+              1) Monte o padrão: cores, números 0–36, <strong className="text-violet-300">terminais T0–T9</strong> ou X.
+              2) Escolha a entrada: cor, números, vizinhos ou terminais + vizinhos.
+            </p>
+            <form onSubmit={addRoletaVizinhos} className="space-y-4">
+              <div className="min-h-[44px] bg-gray-800 rounded-lg px-3 py-2 flex flex-wrap gap-1.5 items-center">
+                {seqItems.length === 0
+                  ? <span className="text-gray-600 text-xs">Clique abaixo para montar a sequência (mais recente → mais antigo)...</span>
+                  : seqItems.map((item, i) => <SeqBall key={i} item={item} />)}
+              </div>
+
+              <div>
+                <p className="text-xs text-gray-500 mb-2">Números da roda (0–36)</p>
+                <div className="flex flex-wrap gap-1">
+                  {Array.from({ length: 37 }, (_, n) => (
+                    <button key={n} type="button" onClick={() => addSeqItem(String(n))}
+                      className={`w-7 h-7 rounded-full text-[10px] font-bold flex items-center justify-center transition hover:scale-110 ${
+                        n === 0 ? "bg-emerald-500 text-white" : EURO_RED.has(n) ? "bg-red-600 text-white" : "bg-gray-700 border border-gray-600 text-white"
+                      }`}>{n}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs text-gray-500 mb-2">
+                  Terminais no padrão (final do número) — ex.: <span className="text-violet-300 font-mono">T1</span> = 1, 11, 21 ou 31
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {Array.from({ length: 10 }, (_, d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => addSeqItem(`T${d}`)}
+                      className="w-9 h-9 rounded-lg text-xs font-bold border bg-violet-600/20 border-violet-500/40 text-violet-200 hover:bg-violet-600/35 transition"
+                      title={`Terminal ${d} (números que terminam em ${d})`}
+                    >
+                      T{d}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-4 gap-2">
+                <button type="button" onClick={() => addSeqItem("VERMELHO")}
+                  className="py-2 bg-red-600/20 border border-red-500/40 text-red-400 rounded-lg text-xs font-medium">V Vermelho</button>
+                <button type="button" onClick={() => addSeqItem("PRETO")}
+                  className="py-2 bg-gray-700/30 border border-gray-600 text-gray-300 rounded-lg text-xs font-medium">P Preto</button>
+                <button type="button" onClick={() => addSeqItem("BRANCO")}
+                  className="py-2 bg-white/5 border border-white/20 text-white rounded-lg text-xs font-medium">B Branco</button>
+                <button type="button" onClick={() => addSeqItem("X")}
+                  className="py-2 bg-gray-600/20 border border-gray-500/40 text-gray-400 rounded-lg text-xs font-medium">X Qualquer</button>
+              </div>
+              <button type="button" onClick={removeLastSeqItem} disabled={seqItems.length === 0}
+                className="w-full py-2 bg-orange-500/10 border border-orange-500/30 text-orange-400 rounded-lg text-xs disabled:opacity-30">← Apagar último</button>
+
+              <div className="border-t border-gray-800 pt-4 space-y-3">
+                <p className="text-xs font-semibold text-gray-300 uppercase tracking-wide">Quando o padrão bater, entrar em…</p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {([
+                    { k: "cor" as const, lab: "Cor" },
+                    { k: "nums" as const, lab: "Números" },
+                    { k: "viz" as const, lab: "Nº + vizinhos" },
+                    { k: "term" as const, lab: "Terminais + viz." },
+                  ]).map((o) => (
+                    <button key={o.k} type="button" onClick={() => setEntryMode(o.k)}
+                      className={`py-2 rounded-lg border text-xs font-semibold transition ${
+                        entryMode === o.k ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-300" : "bg-gray-800 border-gray-700 text-gray-400"
+                      }`}>{o.lab}</button>
+                  ))}
+                </div>
+
+                {entryMode === "cor" && (
+                  <select value={betColor} onChange={(e) => setBetColor(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm">
+                    <option value="VERMELHO">🔴 Vermelho</option>
+                    <option value="PRETO">⚫ Preto</option>
+                    <option value="BRANCO">⚪ Branco (0)</option>
+                  </select>
+                )}
+
+                {entryMode === "nums" && (
+                  <div>
+                    <p className="text-xs text-gray-500 mb-2">Clique para marcar/desmarcar números da entrada</p>
+                    <div className="flex flex-wrap gap-1">
+                      {Array.from({ length: 37 }, (_, n) => {
+                        const on = entryNums.includes(n)
+                        return (
+                          <button key={n} type="button"
+                            onClick={() => setEntryNums((prev) => on ? prev.filter((x) => x !== n) : [...prev, n])}
+                            className={`w-7 h-7 rounded-full text-[10px] font-bold ${
+                              on
+                                ? "ring-2 ring-emerald-400 scale-110"
+                                : "opacity-70"
+                            } ${n === 0 ? "bg-emerald-500 text-white" : EURO_RED.has(n) ? "bg-red-600 text-white" : "bg-gray-700 text-white"}`}>{n}</button>
+                        )
+                      })}
+                    </div>
+                    {entryNums.length > 0 && (
+                      <p className="text-[11px] text-emerald-400/80 mt-2">Entrada: {entryNums.sort((a,b)=>a-b).join(", ")} ({entryNums.length} nº)</p>
+                    )}
+                  </div>
+                )}
+
+                {entryMode === "viz" && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Número central</label>
+                      <div className="flex flex-wrap gap-1 max-h-28 overflow-y-auto">
+                        {Array.from({ length: 37 }, (_, n) => (
+                          <button key={n} type="button" onClick={() => setEntryCenter(n)}
+                            className={`w-7 h-7 rounded-full text-[10px] font-bold ${
+                              entryCenter === n ? "ring-2 ring-emerald-400" : ""
+                            } ${n === 0 ? "bg-emerald-500 text-white" : EURO_RED.has(n) ? "bg-red-600 text-white" : "bg-gray-700 text-white"}`}>{n}</button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Vizinhos de cada lado: {entryNeighbors}</label>
+                      <input type="range" min={0} max={5} value={entryNeighbors}
+                        onChange={(e) => setEntryNeighbors(parseInt(e.target.value, 10) || 0)}
+                        className="w-full" />
+                    </div>
+                    <p className="text-[11px] text-emerald-400/90">
+                      Cobertura: {euroNeighbors(entryCenter, entryNeighbors).join(", ")}
+                      {" "}({euroNeighbors(entryCenter, entryNeighbors).length} números)
+                    </p>
+                  </div>
+                )}
+
+                {entryMode === "term" && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Terminais (final do número)</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {Array.from({ length: 10 }, (_, d) => {
+                          const on = entryTerminals.includes(d)
+                          return (
+                            <button key={d} type="button"
+                              onClick={() => setEntryTerminals((prev) => on ? prev.filter((x) => x !== d) : [...prev, d])}
+                              className={`w-9 h-9 rounded-lg text-sm font-bold border ${
+                                on ? "bg-emerald-500/30 border-emerald-400 text-emerald-200" : "bg-gray-800 border-gray-700 text-gray-400"
+                              }`}>{d}</button>
+                          )
+                        })}
+                      </div>
+                      <p className="text-[10px] text-gray-600 mt-1">Ex.: terminal 1 = 1, 11, 21, 31</p>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">+ Vizinhos de cada lado: {entryNeighbors}</label>
+                      <input type="range" min={0} max={5} value={entryNeighbors}
+                        onChange={(e) => setEntryNeighbors(parseInt(e.target.value, 10) || 0)}
+                        className="w-full" />
+                    </div>
+                    {entryTerminals.length > 0 && (
+                      <p className="text-[11px] text-emerald-400/90 break-words">
+                        Cobertura ({expandTerminalsWithNeighbors(entryTerminals, entryNeighbors).length} nº):{" "}
+                        {expandTerminalsWithNeighbors(entryTerminals, entryNeighbors).join(", ")}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {addError && <p className="text-red-400 text-xs">{addError}</p>}
+              <button type="submit" disabled={adding || seqItems.length === 0}
+                className="w-full bg-green-500 hover:bg-green-400 disabled:bg-green-500/50 text-black font-semibold py-2.5 rounded-lg text-sm">
+                {adding ? "Adicionando..." : "Adicionar Estratégia"}
+              </button>
+            </form>
+          </div>
+
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+            <h2 className="text-sm font-semibold text-white mb-3">Cadastradas ({strategies.length})</h2>
+            {strategies.length === 0 ? (
+              <p className="text-gray-500 text-xs">Nenhuma estratégia ainda.</p>
+            ) : (
+              <div className="space-y-2">
+                {strategies.map((s) => (
+                  <div key={s.id} className="flex items-start justify-between bg-gray-800 rounded-lg px-3 py-2.5 gap-2">
+                    <div className="min-w-0">
+                      <div className="flex gap-1 flex-wrap mb-1">
+                        {s.sequence.split(",").map((item, i) => <SeqBall key={i} item={item.trim()} />)}
+                      </div>
+                      <p className="text-gray-400 text-xs">→ {formatRoletaEntry(s.color)}</p>
+                    </div>
+                    <button onClick={() => deleteStrategy(s.id)} className="text-gray-500 hover:text-red-400 text-base flex-shrink-0">✕</button>
                   </div>
                 ))}
               </div>
@@ -2538,7 +3113,7 @@ function IniciaBotTab({ accountType, gameType, onBotStateChange }: { accountType
   const [acting, setActing] = useState(false)
   const [botError, setBotError] = useState("")
   const [stopPending, setStopPending] = useState(false)
-  const isBacBo = gameType === "BACBO"
+  const isBacBo = gameType === "BACBO" || gameType === "BACBO_LIVE"
 
   async function fetchState() {
     try {
@@ -2554,8 +3129,16 @@ function IniciaBotTab({ accountType, gameType, onBotStateChange }: { accountType
         setIsBetting(!!data.isBetting)
         // Só libera o botão quando o bot realmente parou no servidor
         if (!active) setStopPending(false)
-        const gameSettings = isBacBo ? data.bacBoSettings : data.settings
-        const gameVariables = isBacBo ? data.bacBoVariables : data.variables
+        const gameSettings = gameType === "BACBO_LIVE"
+          ? data.bacBoLiveSettings
+          : gameType === "BACBO"
+            ? data.bacBoSettings
+            : data.settings
+        const gameVariables = gameType === "BACBO_LIVE"
+          ? data.bacBoLiveVariables
+          : gameType === "BACBO"
+            ? data.bacBoVariables
+            : data.variables
         if (gameSettings) setSettings(gameSettings)
         if (gameVariables) setVariables(gameVariables)
       }
@@ -2741,10 +3324,16 @@ function IniciaBotTab({ accountType, gameType, onBotStateChange }: { accountType
               {s?.martingale ?? 0} {s?.martingale ? `(Mult. ${Number(s.martingaleMultiplier).toFixed(1)}x)` : ""}
             </span>
           </div>
-          {(gameType === "DOUBLE" || gameType === "FORTUNE" || isBacBo) && (
+          {(gameType === "DOUBLE" || gameType === "FORTUNE" || gameType === "ROLETA" || isBacBo) && (
             <div className="flex items-center justify-between">
               <span className="text-xs text-gray-400">
-                {gameType === "FORTUNE" ? "Proteção no Amarelo 💛" : isBacBo ? "Proteção no Empate 🟡" : "Proteção no Branco"}
+                {gameType === "FORTUNE"
+                  ? "Proteção no Amarelo 💛"
+                  : gameType === "ROLETA"
+                    ? "Proteção no 0 🟢"
+                    : isBacBo
+                      ? "Proteção no Empate 🟡"
+                      : "Proteção no Branco"}
               </span>
               <span className="text-xs font-semibold text-white">
                 {s?.protectionHand === "SIM" ? "SIM" : "NÃO"}
@@ -2915,21 +3504,27 @@ function IniciaBotTab({ accountType, gameType, onBotStateChange }: { accountType
    ABA CONFIG DO BOT
 ───────────────────────────────────────────────────────────── */
 const BACBO_STAKE_OPTIONS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50] as const
+// Bac Bo Ao Vivo: mesa com valor mínimo de R$ 2,50 (entrada e proteção).
+const BACBO_LIVE_STAKE_OPTIONS = [2.5, 5, 7.5, 10, 12.5, 15, 17.5, 20, 25, 30, 35, 40] as const
+
+function formatStakeLabel(v: number): string {
+  return Number.isInteger(v) ? String(v) : v.toFixed(2).replace(".", ",")
+}
 
 function BacBoStakeGrid({
   value,
   onChange,
+  options = BACBO_STAKE_OPTIONS,
 }: {
   value: number
   onChange: (n: number) => void
+  options?: readonly number[]
 }) {
-  const selected = BACBO_STAKE_OPTIONS.includes(Number(value) as (typeof BACBO_STAKE_OPTIONS)[number])
-    ? Number(value)
-    : null
+  const selected = options.includes(Number(value)) ? Number(value) : null
   return (
     <div className="space-y-2">
       <div className="grid grid-cols-5 gap-1.5">
-        {BACBO_STAKE_OPTIONS.map((v) => {
+        {options.map((v) => {
           const active = selected === v
           return (
             <button
@@ -2942,7 +3537,7 @@ function BacBoStakeGrid({
                   : "bg-gray-900 text-gray-300 border-gray-700/60 hover:border-gray-500 hover:text-white"
               }`}
             >
-              R$ {v}
+              R$ {formatStakeLabel(v)}
             </button>
           )
         })}
@@ -2966,8 +3561,12 @@ function ConfigBotTab({ gameType }: { gameType: string }) {
   const [collapsedGale, setCollapsedGale] = useState(true)
   const [collapsedAvançado, setCollapsedAvançado] = useState(true)
 
-  const isBacBo = gameType === "BACBO"
-  const configUrl = isBacBo ? "/api/user/bacbo/configuracoes" : "/api/user/configuracoes"
+  const isBacBo = gameType === "BACBO" || gameType === "BACBO_LIVE"
+  const configUrl = gameType === "BACBO_LIVE"
+    ? "/api/user/bacbo-live/configuracoes"
+    : gameType === "BACBO"
+      ? "/api/user/bacbo/configuracoes"
+      : "/api/user/configuracoes"
 
   useEffect(() => {
     fetch(configUrl).then((r) => r.json()).then((data) => {
@@ -3047,7 +3646,28 @@ function ConfigBotTab({ gameType }: { gameType: string }) {
                     update("enterType", "VALOR")
                     update("enterValue", n)
                   }}
+                  options={gameType === "BACBO_LIVE" ? BACBO_LIVE_STAKE_OPTIONS : BACBO_STAKE_OPTIONS}
                 />
+              </>
+            ) : gameType === "ROLETA" ? (
+              <>
+                <p className="text-xs text-gray-500 mb-2 font-medium">
+                  Valor por casa (número/cor) — mínimo da mesa <span className="text-emerald-400 font-semibold">R$ 0,50</span>
+                </p>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-green-400 text-xs font-bold select-none">R$</span>
+                  <NumberField
+                    step="0.50"
+                    min="0.50"
+                    value={Math.max(0.5, Number(settings.enterValue) || 0.5)}
+                    onChange={(n) => {
+                      update("enterType", "VALOR")
+                      update("enterValue", Math.max(0.5, Number(n) || 0.5))
+                    }}
+                    className={`${inp} pl-9`}
+                  />
+                </div>
+                <p className="text-[11px] text-gray-600 mt-1.5">Ficha mínima fixa da Mega Roulette Brazilian: R$ 0,50</p>
               </>
             ) : (
               <>
@@ -3130,34 +3750,69 @@ function ConfigBotTab({ gameType }: { gameType: string }) {
               </div>
             </div>
 
-            {(gameType === "DOUBLE" || gameType === "FORTUNE") && (
+            {(gameType === "DOUBLE" || gameType === "FORTUNE" || gameType === "ROLETA") && (
               <div className="flex items-center justify-between pt-3 border-t border-gray-800/60 mt-3">
                 <div>
                   <p className="text-sm text-gray-300 font-medium">
-                    {gameType === "FORTUNE" ? "Proteção no Amarelo 💛" : "Proteção no Branco"}
+                    {gameType === "FORTUNE"
+                      ? "Proteção no Amarelo 💛"
+                      : gameType === "ROLETA"
+                        ? "Proteção no 0 🟢"
+                        : "Proteção no Branco"}
                   </p>
                   <p className="text-xs text-gray-600">
-                    {gameType === "FORTUNE" ? "Aposta extra no amarelo por rodada" : "Aposta extra no branco por rodada"}
+                    {gameType === "FORTUNE"
+                      ? "Aposta extra no amarelo por rodada"
+                      : gameType === "ROLETA"
+                        ? "Aposta extra no zero quando a entrada principal não inclui o 0"
+                        : "Aposta extra no branco por rodada"}
                   </p>
                 </div>
                 <Toggle on={settings.protectionHand === "SIM"}
                   onToggle={() => update("protectionHand", settings.protectionHand === "SIM" ? "NÃO" : "SIM")} />
               </div>
             )}
-            {(gameType === "DOUBLE" || gameType === "FORTUNE") && settings.protectionHand === "SIM" && (
+            {(gameType === "DOUBLE" || gameType === "FORTUNE" || gameType === "ROLETA") && settings.protectionHand === "SIM" && (
               <div className="mt-2 space-y-3">
                 <div>
-                  <p className="text-xs text-gray-500 mb-1.5 font-medium">Valor da Proteção (R$)</p>
+                  <p className="text-xs text-gray-500 mb-1.5 font-medium">
+                    Valor da Proteção (R$)
+                    {gameType === "ROLETA" && (
+                      <span className="text-emerald-400/90 font-semibold"> · mín. 0,50</span>
+                    )}
+                  </p>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400 text-xs font-bold select-none">R$</span>
-                    <NumberField step="0.01" value={settings.protectionValue}
-                      onChange={(n) => update("protectionValue", n)}
-                      className={`${inp} pl-9`} />
+                    <NumberField
+                      step={gameType === "ROLETA" ? "0.50" : "0.01"}
+                      min={gameType === "ROLETA" ? "0.50" : undefined}
+                      value={
+                        gameType === "ROLETA"
+                          ? Math.max(0.5, Number(settings.protectionValue) || 0.5)
+                          : settings.protectionValue
+                      }
+                      onChange={(n) =>
+                        update(
+                          "protectionValue",
+                          gameType === "ROLETA" ? Math.max(0.5, Number(n) || 0.5) : n
+                        )
+                      }
+                      className={`${inp} pl-9`}
+                    />
                   </div>
+                  {gameType === "ROLETA" && (
+                    <p className="text-[11px] text-gray-600 mt-1.5">
+                      Ficha mínima da mesa no 0: R$ 0,50 (valores menores são bloqueados)
+                    </p>
+                  )}
                 </div>
                 <div>
                   <p className="text-xs text-gray-500 mb-1.5 font-medium">
-                    {gameType === "FORTUNE" ? "Multiplicador Amarelo" : "Multiplicador Branco"}
+                    {gameType === "FORTUNE"
+                      ? "Multiplicador Amarelo"
+                      : gameType === "ROLETA"
+                        ? "Multiplicador do 0 (gale)"
+                        : "Multiplicador Branco"}
                   </p>
                   <div className="relative">
                     <NumberField step="0.1" min="1" value={settings.whiteMultiplier}
@@ -3165,11 +3820,16 @@ function ConfigBotTab({ gameType }: { gameType: string }) {
                       className={`${inp} pr-8`} />
                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 text-xs font-bold select-none">×</span>
                   </div>
+                  {gameType === "ROLETA" && (
+                    <p className="text-[10px] text-gray-600 mt-1">
+                      No gale: proteção = valor × mult^gale. Não aposta no 0 se o padrão já cobre o zero.
+                    </p>
+                  )}
                 </div>
               </div>
             )}
 
-            {gameType === "BACBO" && (
+            {(gameType === "BACBO" || gameType === "BACBO_LIVE") && (
               <div className="flex items-center justify-between pt-3 border-t border-gray-800/60 mt-3">
                 <div>
                   <p className="text-sm text-gray-300 font-medium">Proteção no Empate 🟡</p>
@@ -3179,13 +3839,14 @@ function ConfigBotTab({ gameType }: { gameType: string }) {
                   onToggle={() => update("protectionHand", settings.protectionHand === "SIM" ? "NÃO" : "SIM")} />
               </div>
             )}
-            {gameType === "BACBO" && settings.protectionHand === "SIM" && (
+            {(gameType === "BACBO" || gameType === "BACBO_LIVE") && settings.protectionHand === "SIM" && (
               <div className="mt-2 space-y-3">
                 <div>
                   <p className="text-xs text-gray-500 mb-1.5 font-medium">Valor da Proteção (R$)</p>
                   <BacBoStakeGrid
                     value={Number(settings.protectionValue) || 0}
                     onChange={(n) => update("protectionValue", n)}
+                    options={gameType === "BACBO_LIVE" ? BACBO_LIVE_STAKE_OPTIONS : BACBO_STAKE_OPTIONS}
                   />
                 </div>
                 <div>
@@ -3200,30 +3861,31 @@ function ConfigBotTab({ gameType }: { gameType: string }) {
               </div>
             )}
 
-            {(gameType === "DOUBLE" || gameType === "FORTUNE" || gameType === "BACBO") && (
+            {(gameType === "DOUBLE" || gameType === "FORTUNE" || gameType === "BACBO" || gameType === "BACBO_LIVE") && (
               <div className="flex items-center justify-between pt-3 border-t border-gray-800/60 mt-3">
                 <div>
                   <p className="text-sm text-gray-300 font-medium">
-                    Gale diferente no {gameType === "FORTUNE" ? "Amarelo 💛" : gameType === "BACBO" ? "Empate 🟡" : "Branco"}
+                    Gale diferente no {gameType === "FORTUNE" ? "Amarelo 💛" : (gameType === "BACBO" || gameType === "BACBO_LIVE") ? "Empate 🟡" : "Branco"}
                   </p>
                   <p className="text-xs text-gray-600">
-                    Usa outro valor de entrada, qtd. de gales e multiplicador quando a entrada principal for {gameType === "FORTUNE" ? "amarelo" : gameType === "BACBO" ? "empate" : "branco"}
+                    Usa outro valor de entrada, qtd. de gales e multiplicador quando a entrada principal for {gameType === "FORTUNE" ? "amarelo" : (gameType === "BACBO" || gameType === "BACBO_LIVE") ? "empate" : "branco"}
                   </p>
                 </div>
                 <Toggle on={settings.whiteEntryGaleEnabled}
                   onToggle={() => update("whiteEntryGaleEnabled", !settings.whiteEntryGaleEnabled)} />
               </div>
             )}
-            {(gameType === "DOUBLE" || gameType === "FORTUNE" || gameType === "BACBO") && settings.whiteEntryGaleEnabled && (
+            {(gameType === "DOUBLE" || gameType === "FORTUNE" || gameType === "BACBO" || gameType === "BACBO_LIVE") && settings.whiteEntryGaleEnabled && (
               <div className="mt-2 space-y-3">
                 <div>
                   <p className="text-xs text-gray-500 mb-1.5 font-medium">
-                    Valor de Entrada ({gameType === "FORTUNE" ? "Amarelo" : gameType === "BACBO" ? "Empate" : "Branco"})
+                    Valor de Entrada ({gameType === "FORTUNE" ? "Amarelo" : (gameType === "BACBO" || gameType === "BACBO_LIVE") ? "Empate" : "Branco"})
                   </p>
-                  {gameType === "BACBO" ? (
+                  {(gameType === "BACBO" || gameType === "BACBO_LIVE") ? (
                     <BacBoStakeGrid
                       value={Number(settings.whiteEntryValue) || 0}
                       onChange={(n) => update("whiteEntryValue", n)}
+                      options={gameType === "BACBO_LIVE" ? BACBO_LIVE_STAKE_OPTIONS : BACBO_STAKE_OPTIONS}
                     />
                   ) : (
                     <div className="relative">
@@ -3240,7 +3902,7 @@ function ConfigBotTab({ gameType }: { gameType: string }) {
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <p className="text-xs text-gray-500 mb-1.5 font-medium">
-                      Qtd. de Gales ({gameType === "FORTUNE" ? "Amarelo" : gameType === "BACBO" ? "Empate" : "Branco"})
+                      Qtd. de Gales ({gameType === "FORTUNE" ? "Amarelo" : (gameType === "BACBO" || gameType === "BACBO_LIVE") ? "Empate" : "Branco"})
                     </p>
                     <NumberField min="0" value={settings.whiteEntryGale}
                       onChange={(n) => update("whiteEntryGale", n)}
@@ -3248,7 +3910,7 @@ function ConfigBotTab({ gameType }: { gameType: string }) {
                   </div>
                   <div>
                     <p className="text-xs text-gray-500 mb-1.5 font-medium">
-                      Multiplicador ({gameType === "FORTUNE" ? "Amarelo" : gameType === "BACBO" ? "Empate" : "Branco"})
+                      Multiplicador ({gameType === "FORTUNE" ? "Amarelo" : (gameType === "BACBO" || gameType === "BACBO_LIVE") ? "Empate" : "Branco"})
                     </p>
                     <div className="relative">
                       <NumberField step="0.1" value={settings.whiteEntryGaleMultiplier}
@@ -3577,13 +4239,17 @@ export default function ContaPage() {
       setBalance(data.variables?.balance ?? null)
       setBotActive(!!data.isActive)
       let hidden = [] as string[]
-      if (typeof data.hiddenGames === "string") {
-        hidden = data.hiddenGames.split(",").map((g: string) => g.trim()).filter(Boolean)
+      if (typeof data.hiddenGamesContaBlaze === "string") {
+        hidden = data.hiddenGamesContaBlaze.split(",").map((g: string) => g.trim()).filter(Boolean)
         setHiddenGames(hidden)
       }
+      // Crash removido — se admin não mandou, força oculto no cliente
+      if (!hidden.includes("CRASH")) hidden.push("CRASH")
+      setHiddenGames(hidden)
       let gt = data.gameType ?? "DOUBLE"
-      if (hidden.includes(gt)) {
-        const order = ["DOUBLE", "CRASH", "FORTUNE", "BACBO"]
+      // DAY_TRADE virou aba própria (/day-trade), não é mais jogo da Conta Blaze
+      if (gt === "CRASH" || gt === "DAY_TRADE" || hidden.includes(gt)) {
+        const order = ["DOUBLE", "FORTUNE", "BACBO", "BACBO_LIVE", "ROLETA"]
         gt = order.find((g) => !hidden.includes(g)) || "DOUBLE"
         setGameType(gt)
         fetch("/api/user/conta", {
@@ -3642,12 +4308,15 @@ export default function ContaPage() {
   }
 
   function toggleGameType() {
-    const next = gameType === "DOUBLE" ? "CRASH" : gameType === "CRASH" ? "FORTUNE" : "DOUBLE"
+    const order = (["DOUBLE", "FORTUNE", "BACBO", "BACBO_LIVE", "ROLETA"] as const).filter((g) => !hiddenGames.includes(g))
+    const idx = order.indexOf(gameType as typeof order[number])
+    const next = order[(idx + 1 + order.length) % order.length] || "DOUBLE"
     setGameType(next)
     saveToggle("gameType", next)
   }
 
-  function handleSelectGame(selected: "DOUBLE" | "CRASH" | "FORTUNE" | "BACBO") {
+  function handleSelectGame(selected: "DOUBLE" | "FORTUNE" | "BACBO" | "BACBO_LIVE" | "ROLETA") {
+    if (selected === ("CRASH" as string)) return
     setGameType(selected)
     saveToggle("gameType", selected)
   }
@@ -3786,8 +4455,8 @@ export default function ContaPage() {
                 <p className="text-white text-sm font-medium">Selecione o Jogo Ativo</p>
                 <div className={`grid gap-4 grid-cols-2 ${
                     (() => {
-                      const n = ["DOUBLE","CRASH","FORTUNE","BACBO"].filter((k) => !hiddenGames.includes(k)).length
-                      return n >= 4 ? "sm:grid-cols-4" : n === 3 ? "sm:grid-cols-3" : "sm:grid-cols-2"
+                      const n = ["DOUBLE","FORTUNE","BACBO","BACBO_LIVE","ROLETA"].filter((k) => !hiddenGames.includes(k)).length
+                      return n >= 3 ? "sm:grid-cols-3" : "sm:grid-cols-2"
                     })()
                   }`}>
                   {[
@@ -3799,15 +4468,6 @@ export default function ContaPage() {
                       overlayColor: "from-red-600/30",
                       glowColor: "bg-red-500/20 text-red-400 border-red-500/30",
                       labelColor: "text-red-400"
-                    },
-                    {
-                      key: "CRASH",
-                      label: "Crash",
-                      icon: "🚀",
-                      selectedStyle: "border-blue-500 shadow-lg shadow-blue-500/20 bg-blue-500/5 scale-[1.02]",
-                      overlayColor: "from-blue-600/30",
-                      glowColor: "bg-blue-500/20 text-blue-400 border-blue-500/30",
-                      labelColor: "text-blue-400"
                     },
                     {
                       key: "FORTUNE",
@@ -3826,11 +4486,32 @@ export default function ContaPage() {
                       overlayColor: "from-purple-600/30",
                       glowColor: "bg-purple-500/20 text-purple-400 border-purple-500/30",
                       labelColor: "text-purple-400"
+                    },
+                    {
+                      key: "BACBO_LIVE",
+                      label: "Bac Bo Ao Vivo",
+                      icon: "🔥",
+                      selectedStyle: "border-rose-500 shadow-lg shadow-rose-500/20 bg-rose-500/5 scale-[1.02]",
+                      overlayColor: "from-rose-600/30",
+                      glowColor: "bg-rose-500/20 text-rose-400 border-rose-500/30",
+                      labelColor: "text-rose-400"
+                    },
+                    {
+                      key: "ROLETA",
+                      label: "Mega Roulette - Brazilian",
+                      icon: "🎡",
+                      selectedStyle: "border-emerald-500 shadow-lg shadow-emerald-500/20 bg-emerald-500/5 scale-[1.02]",
+                      overlayColor: "from-emerald-600/30",
+                      glowColor: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
+                      labelColor: "text-emerald-400"
                     }
                   ].filter((g) => !hiddenGames.includes(g.key)).map((g) => {
-                    const isBacBo = g.key === "BACBO"
                     const isSelected = gameType === g.key
-                    const imgPath = `/imagem-jogos/blaze/${g.key.toLowerCase()}.png`
+                    const imgPath = g.key === "BACBO_LIVE"
+                      ? "/imagem-jogos/blaze/bac_bo_ao_vivo.png"
+                      : g.key === "ROLETA"
+                      ? "/imagem-jogos/blaze/mega_roleta.png"
+                      : `/imagem-jogos/blaze/${g.key.toLowerCase()}.png`
                     return (
                       <div
                         key={g.key}
@@ -3843,10 +4524,10 @@ export default function ContaPage() {
                       >
                         {/* Game Image Background with high saturation/brightness on select */}
                         <div className="absolute inset-0 z-0 bg-cover bg-center transition-all duration-500 group-hover:scale-105"
-                          style={{ 
+                          style={{
                             backgroundImage: `url(${imgPath})`,
-                            filter: isSelected 
-                              ? "brightness(1.1) contrast(1.1) saturate(1.15)" 
+                            filter: isSelected
+                              ? "brightness(1.1) contrast(1.1) saturate(1.15)"
                               : "brightness(0.5) contrast(0.9) saturate(0.6)",
                             opacity: isSelected ? 0.95 : 0.45
                           }}

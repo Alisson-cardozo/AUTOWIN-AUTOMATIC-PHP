@@ -6,6 +6,7 @@ namespace App\Controllers\Api;
 
 use App\Auth\Auth;
 use App\Bot\Games\BacBoSource;
+use App\Bot\Games\MegaRouletteSource;
 use App\Database;
 use App\Models\ConfigRepository;
 use App\Services\HttpClient;
@@ -196,17 +197,28 @@ final class GameController
 
     public function bacboRecent(): void
     {
+        $this->bacboRecentForRoom('bacbo');
+    }
+
+    /** Bac Bo Ao Vivo — API ?game=bacbo-live, tabelas bacbo_live_* */
+    public function bacboLiveRecent(): void
+    {
+        $this->bacboRecentForRoom('bacbo-live');
+    }
+
+    private function bacboRecentForRoom(string $gameKey): void
+    {
         Auth::requireUserId();
 
-        // Fonte: TipMiner → bacbominer → DB
-        $apiResults = BacBoSource::fetchSource();
+        $apiResults = BacBoSource::fetchSource($gameKey);
         $source = BacBoSource::$lastSource ?? 'unknown';
+        $logTag = $gameKey === 'bacbo-live' ? 'bacbo-live/recent' : 'bacbo/recent';
 
         if ($apiResults) {
             try {
-                BacBoSource::persistNew($apiResults);
+                BacBoSource::persistNew($apiResults, $gameKey);
             } catch (\Throwable $e) {
-                log_msg('[bacbo/recent] erro ao persistir: ' . $e->getMessage(), 'bot');
+                log_msg("[{$logTag}] erro ao persistir: " . $e->getMessage(), 'bot');
             }
 
             $created = (string) ($apiResults[0]['created_at'] ?? '');
@@ -214,7 +226,7 @@ final class GameController
             $newestAgeMs = $newestTs
                 ? (microtime(true) * 1000) - ($newestTs * 1000)
                 : self::BACBO_STALE_THRESHOLD_MS + 1;
-            // tipminer / bacbominer fresco = Online; só DB antigo = Offline
+            // tipminer fresco = Online; só DB antigo = Offline
             $stale = $source === 'db' || $newestAgeMs > self::BACBO_STALE_THRESHOLD_MS;
 
             $sliced = array_slice($apiResults, 0, self::BACBO_MAX_RESULTS);
@@ -234,33 +246,217 @@ final class GameController
                 'total' => min(count($apiResults), self::BACBO_MAX_RESULTS),
                 'apiDown' => $stale,
                 'source' => $source,
+                'game' => $gameKey,
             ]);
         }
 
-        log_msg('[bacbo/recent] nenhuma fonte disponível', 'bot');
-        json_response(['results' => [], 'total' => 0, 'apiDown' => true, 'source' => $source]);
+        log_msg("[{$logTag}] nenhuma fonte disponível", 'bot');
+        json_response(['results' => [], 'total' => 0, 'apiDown' => true, 'source' => $source, 'game' => $gameKey]);
     }
+
+    public function megaRouletteRecent(): void
+    {
+        Auth::requireUserId();
+
+        $results = MegaRouletteSource::fetchSource();
+        if ($results) {
+            try {
+                MegaRouletteSource::persistNew($results);
+            } catch (\Throwable $e) {
+                log_msg('[megaroulette/recent] erro ao persistir: ' . $e->getMessage(), 'bot');
+            }
+        }
+
+        // Preferência: history.json fresco da mesa (WS). Fallback: banco.
+        // Filtra lixo antigo do GC browser (ids gc-*) quando há pragmatic.
+        $rows = [];
+        if (is_array($results) && $results !== []) {
+            foreach (array_slice($results, 0, 200) as $r) {
+                $id = (string) ($r['id'] ?? '');
+                if ($id === '' || str_starts_with($id, 'gc-8-287-')) {
+                    continue; // não mistura seed/browser do GC
+                }
+                $rows[] = [
+                    'id' => $id,
+                    'color' => (string) ($r['color'] ?? ''),
+                    'roll' => (int) ($r['roll'] ?? -1),
+                    'created_at' => (string) ($r['created_at'] ?? ''),
+                ];
+            }
+        }
+        if ($rows === []) {
+            $dbRows = Database::fetchAll(
+                "SELECT blazeId AS id, color, roll, createdAt AS created_at FROM game_results
+                 WHERE gameType = 'ROLETA' AND platform = 'BLAZE'
+                   AND blazeId NOT LIKE 'gc-8-287-%'
+                 ORDER BY id DESC LIMIT 200"
+            );
+            $rows = array_map(static function (array $r): array {
+                $r['roll'] = (int) $r['roll'];
+                return $r;
+            }, $dbRows);
+        }
+
+        // Dedup por id (evita pares 15,15 no painel)
+        $seen = [];
+        $dedup = [];
+        foreach ($rows as $r) {
+            $id = (string) ($r['id'] ?? '');
+            if ($id === '' || isset($seen[$id])) {
+                continue;
+            }
+            $seen[$id] = true;
+            $dedup[] = $r;
+        }
+
+        json_response([
+            'results' => $dedup,
+            'total' => count($dedup),
+            'apiDown' => !$results,
+            'source' => is_array($results) && $results !== [] ? 'ws' : 'db',
+        ]);
+    }
+
+    private const ROULETTE_RED_NUMBERS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36];
+    private const ROULETTE_PROXY_URL = 'https://icy-frog-9f91.alissonprojetostaco.workers.dev';
 
     public function roletasRecent(): void
     {
         Auth::requireUserId();
 
+        $results = MegaRouletteSource::fetchSource();
+        if ($results) {
+            try {
+                MegaRouletteSource::persistNew($results);
+            } catch (\Throwable) {
+            }
+        }
+
+        $rows = [];
+        if (is_array($results) && $results !== []) {
+            foreach (array_slice($results, 0, 100) as $r) {
+                $id = (string) ($r['id'] ?? '');
+                if ($id === '' || str_starts_with($id, 'gc-8-287-')) {
+                    continue;
+                }
+                $num = (int) ($r['roll'] ?? -1);
+                if ($num < 0 || $num > 36) {
+                    continue;
+                }
+                $rows[] = [
+                    'id' => $id,
+                    'created_at' => (string) ($r['created_at'] ?? ''),
+                    'result' => $num,
+                    'color' => $num === 0 ? 'Green' : (in_array($num, self::ROULETTE_RED_NUMBERS, true) ? 'Red' : 'Black'),
+                    'lightningMultiplier' => null,
+                ];
+            }
+        }
+
+        if ($rows === []) {
+            try {
+                $dbRows = Database::fetchAll(
+                    "SELECT blazeId AS id, color, roll, createdAt AS created_at FROM game_results
+                     WHERE gameType = 'ROLETA' AND platform = 'BLAZE'
+                       AND blazeId NOT LIKE 'gc-8-287-%'
+                     ORDER BY id DESC LIMIT 100"
+                );
+                foreach ($dbRows as $r) {
+                    $num = (int) $r['roll'];
+                    $rows[] = [
+                        'id' => $r['id'],
+                        'created_at' => $r['created_at'],
+                        'result' => $num,
+                        'color' => $num === 0 ? 'Green' : (in_array($num, self::ROULETTE_RED_NUMBERS, true) ? 'Red' : 'Black'),
+                        'lightningMultiplier' => null,
+                    ];
+                }
+            } catch (\Throwable) {
+            }
+        }
+
+        // Dedup por id
+        $seen = [];
+        $dedup = [];
+        foreach ($rows as $r) {
+            $id = (string) ($r['id'] ?? '');
+            if ($id === '' || isset($seen[$id])) {
+                continue;
+            }
+            $seen[$id] = true;
+            $dedup[] = $r;
+        }
+
+        json_response([
+            'results' => $dedup,
+            'total' => count($dedup),
+            'apiDown' => !$results,
+            'isMock' => false,
+        ]);
+    }
+
+    /**
+     * XXXtreme Lightning Roulette via proxy próprio (PHP + Cloudflare Worker) —
+     * mesmo mecanismo usado pelo Bac Bo pra contornar bloqueio do Cloudflare
+     * ao TipMiner a partir de IPs de hospedagem.
+     *
+     * @return list<array{id:string,created_at:string,result:int,color:string,lightningMultiplier:?int}>|null
+     */
+    private function fetchRouletteXtreme(): ?array
+    {
         try {
-            $rows = Database::fetchAll('SELECT * FROM roulette_results ORDER BY id DESC LIMIT 100');
-            json_response([
-                'results' => array_map(static fn (array $r) => [
-                    'id' => $r['evoId'],
-                    'created_at' => $r['createdAt'],
-                    'result' => (int) $r['result'],
-                    'color' => $r['color'],
-                    'lightningMultiplier' => $r['lightningMultiplier'] !== null ? (int) $r['lightningMultiplier'] : null,
-                ], $rows),
-                'total' => count($rows),
-                'apiDown' => false,
-                'isMock' => false,
-            ]);
+            // Timeout reduzido para 5s — o poll do front é de 5s;
+            // com 12s o servidor acumulava requisições pendentes travando tudo.
+            $http = new \App\Services\HttpClient('', ['Accept' => 'application/json'], 5);
+            $res = $http->get(self::ROULETTE_PROXY_URL . '?game=roulette-xtreme&limit=100');
+            if (!$res['ok'] || empty($res['data']['success']) || !is_array($res['data']['results'] ?? null)) {
+                return null;
+            }
+
+            $out = [];
+            foreach ($res['data']['results'] as $r) {
+                if (!is_array($r) || empty($r['uuid'])) {
+                    continue;
+                }
+                $num = (int) ($r['result'] ?? -1);
+                if ($num < 0 || $num > 36) {
+                    continue;
+                }
+                $color = $num === 0 ? 'Green' : (in_array($num, self::ROULETTE_RED_NUMBERS, true) ? 'Red' : 'Black');
+                $out[] = [
+                    'id' => (string) $r['uuid'],
+                    'created_at' => (string) ($r['instant'] ?? ''),
+                    'result' => $num,
+                    'color' => $color,
+                    'lightningMultiplier' => isset($r['multiplier']) && (int) $r['multiplier'] > 0 ? (int) $r['multiplier'] : null,
+                ];
+            }
+            return $out ?: null;
         } catch (\Throwable $e) {
-            json_response(['error' => $e->getMessage(), 'results' => [], 'total' => 0, 'apiDown' => true], 500);
+            log_msg('[roleta] proxy: ' . $e->getMessage(), 'bot');
+            return null;
+        }
+    }
+
+    /** @param list<array{id:string,created_at:string,result:int,color:string,lightningMultiplier:?int}> $results */
+    private function persistRouletteResults(array $results): void
+    {
+        foreach (array_reverse($results) as $r) {
+            $exists = Database::fetch('SELECT id FROM roulette_results WHERE evoId = ?', [$r['id']]);
+            if ($exists) {
+                continue;
+            }
+            try {
+                Database::insert('roulette_results', [
+                    'evoId' => $r['id'],
+                    'result' => $r['result'],
+                    'color' => $r['color'],
+                    'lightningMultiplier' => $r['lightningMultiplier'],
+                    'createdAt' => $r['created_at'] !== '' ? date('Y-m-d H:i:s', strtotime($r['created_at'])) : now(),
+                ]);
+            } catch (\Throwable) {
+                // duplicado/corrida — ignora
+            }
         }
     }
 
@@ -560,7 +756,7 @@ final class GameController
 
         if ($game === 'FORTUNE') {
             $daysBack = min((int) ($_GET['days'] ?? 1), 14);
-            $maxPages = min((int) ($_GET['maxPages'] ?? 30), 200);
+            $maxPages = min((int) ($_GET['maxPages'] ?? 60), 200);
             $end = $this->premiumRoundToHour($now);
             $start = $this->premiumRoundToHour((clone $now)->modify('-' . $daysBack . ' days'));
 
@@ -582,11 +778,11 @@ final class GameController
             $start = $boundsStart;
             $isTodayOnly = $boundsEnd > $now;
             $end = $isTodayOnly ? clone $now : $boundsEnd;
-            $maxPages = min((int) ($_GET['maxPages'] ?? 50), 80);
+            $maxPages = min((int) ($_GET['maxPages'] ?? 30), 40);
         } else {
             $defaultDays = $game === 'CRASH' ? 7 : 1;
             $daysBack = min((int) ($_GET['days'] ?? $defaultDays), 14);
-            $maxPages = min((int) ($_GET['maxPages'] ?? 30), 60);
+            $maxPages = min((int) ($_GET['maxPages'] ?? 30), 40);
             $isTodayOnly = $daysBack === 1;
             $end = $isTodayOnly ? $this->premiumRoundTo10Seconds($now) : $this->premiumRoundToHour($now);
             $start = $isTodayOnly

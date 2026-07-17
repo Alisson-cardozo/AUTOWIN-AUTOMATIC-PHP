@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client"
 import React from "react"
-import * as PageModule from "c:/Users/Aliss/Desktop/autowin-php/portal-src/admin-pages/users"
+import * as PageModule from "C:/Users/Aliss/Desktop/autowin-php-cp/portal-src/admin-pages/users"
 
 function resolvePage(mod: any): React.ComponentType {
   const p = mod?.default ?? mod

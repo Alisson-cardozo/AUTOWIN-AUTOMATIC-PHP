@@ -114,6 +114,15 @@ final class PageController
         ], 'layouts/admin');
     }
 
+    public function proxyAdmin(): void
+    {
+        $this->requireAdminPage();
+        View::render('admin/proxy', [
+            'title' => 'Proxy',
+            'nav' => 'proxy',
+        ], 'layouts/admin');
+    }
+
     // ─── User portal ─────────────────────────────────────────
     private function requireUserPage(): array
     {
@@ -162,6 +171,24 @@ final class PageController
         $user = $this->requireUserPage();
         $this->assertTabVisible('jonbet');
         View::render('user/jonbet', ['title' => 'Jonbet', 'user' => $user, 'nav' => 'jonbet'], 'layouts/user');
+    }
+
+    public function dayTrade(): void
+    {
+        $user = $this->requireUserPage();
+        $this->assertTabVisible('day-trade');
+        View::render('user/day-trade', ['title' => 'Day Trade', 'user' => $user, 'nav' => 'day-trade'], 'layouts/user');
+    }
+
+    public function premiumDayTrade(): void
+    {
+        $user = $this->requireUserPage();
+        $this->assertTabVisible('premium-day-trade');
+        View::render('user/premium-day-trade', [
+            'title' => 'Premium Day Trade',
+            'user' => $user,
+            'nav' => 'premium-day-trade',
+        ], 'layouts/user');
     }
 
     public function estrategias(): void
@@ -227,6 +254,29 @@ final class PageController
         $this->assertTabVisible('jogos-premium');
         $this->assertGameVisible('BACBO');
         View::render('user/premium-bacbo', ['title' => 'Bac Bo', 'user' => $user, 'nav' => 'bacbo'], 'layouts/user');
+    }
+
+    public function premiumBacboLive(): void
+    {
+        $user = $this->requireUserPage();
+        $this->assertTabVisible('jogos-premium');
+        // Ocultar se admin escondeu na Conta Blaze (BACBO_LIVE) ou no hub live (bacbo-live)
+        $hiddenConta = array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) (ConfigRepository::get('HIDDEN_GAMES_CONTA_BLAZE', '') ?? ''))
+        )));
+        $hiddenLive = array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) (ConfigRepository::get('HIDDEN_LIVE_GAMES', '') ?? ''))
+        )));
+        if (in_array('BACBO_LIVE', $hiddenConta, true) || in_array('bacbo-live', $hiddenLive, true)) {
+            redirect('/inicio');
+        }
+        View::render('user/premium-bacbo-live', [
+            'title' => 'Bac Bo Ao Vivo',
+            'user' => $user,
+            'nav' => 'bacbo-live',
+        ], 'layouts/user');
     }
 
     public function premiumRoletas(): void

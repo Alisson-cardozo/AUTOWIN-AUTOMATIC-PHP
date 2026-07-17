@@ -4,11 +4,20 @@
  * Substitui a API bacbominer: escuta bacbo.playerState (stage Confirmation),
  * grava em storage/bacbo-ws/history.json (mais recente primeiro).
  *
- * Sessão: usa o primeiro storage/bacbo-evo/{userId}.json com evoSessionId
- * válido, ou env BACBO_EVOSESSIONID / BACBO_TABLE_ID / BACBO_VT_ID.
+ * IMPORTANTE — multi-usuário / apostas REAL:
+ *   NÃO usa storage/bacbo-evo/{userId}.json por padrão.
+ *   Evolution = 1 WebSocket por EVOSESSIONID. Se o feed "roubar" a sessão
+ *   do bot, a aposta REAL falha com connectionAlreadyExists.
+ *
+ * Sessão do feed (só):
+ *   env BACBO_EVOSESSIONID (+ opcional BACBO_TABLE_ID / BACBO_VT_ID)
+ *   ou BACBO_FEED_ALLOW_USER_SESSION=1 para reutilizar arquivo de user (dev).
  *
  * Uso:
  *   node bot/bacbo-ws-feed.cjs
+ *
+ * Resultados do bot em produção: preferir TipMiner (BacBoSource) — não precisa
+ * deste feed para apostar.
  */
 
 const fs = require("fs");
@@ -22,7 +31,10 @@ try {
   process.exit(1);
 }
 
-const ROOT = path.resolve(__dirname, "..");
+// AUTOWIN_ROOT: use quando este script rodar fora do projeto PHP (ex.: Aplicação
+// Node.js separada no hPanel) — deve apontar pra pasta que contém "storage/"
+// do app PHP, senão o feed grava resultados num storage que o PHP não lê.
+const ROOT = process.env.AUTOWIN_ROOT || path.resolve(__dirname, "..");
 const SESSION_DIR = path.join(ROOT, "storage", "bacbo-evo");
 const OUT_DIR = path.join(ROOT, "storage", "bacbo-ws");
 const HISTORY_FILE = path.join(OUT_DIR, "history.json");
@@ -34,6 +46,15 @@ const DEFAULT_VT = "sp4xxdwvb7ye75c5";
 const EVO_HOST = process.env.BACBO_EVO_HOST || "a8-latam.evo-games.com";
 const MAX_RESULTS = 300;
 const RECONNECT_MS = 4000;
+
+// Fallback pra quando não dá pra configurar env vars pelo painel de hospedagem
+// (ex.: Hostinger) — bridge.config.json fica junto deste arquivo, fora do git.
+let fileConfig = {};
+try {
+  fileConfig = JSON.parse(fs.readFileSync(path.join(__dirname, "bridge.config.json"), "utf8"));
+} catch {
+  /* arquivo opcional */
+}
 
 function ensureDirs() {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
@@ -199,7 +220,7 @@ function pushResults(list) {
 }
 
 function findSession() {
-  // 1) env explícito
+  // 1) env dedicado ao FEED (não misturar com sessão de aposta do user)
   if (process.env.BACBO_EVOSESSIONID) {
     return {
       evoSessionId: process.env.BACBO_EVOSESSIONID,
@@ -210,7 +231,13 @@ function findSession() {
     };
   }
 
-  // 2) arquivos de sessão de usuários (qualquer um com evoSessionId)
+  // 2) opcional — NÃO roubar sessão de aposta por padrão
+  const allowUser =
+    String(process.env.BACBO_FEED_ALLOW_USER_SESSION || "").trim() === "1" || fileConfig.allowUserSession === true;
+  if (!allowUser) {
+    return null;
+  }
+
   ensureDirs();
   let files = [];
   try {
@@ -218,7 +245,6 @@ function findSession() {
   } catch {
     files = [];
   }
-  // preferir mais recente
   files.sort((a, b) => {
     try {
       return fs.statSync(path.join(SESSION_DIR, b)).mtimeMs - fs.statSync(path.join(SESSION_DIR, a)).mtimeMs;
@@ -230,6 +256,7 @@ function findSession() {
   for (const f of files) {
     try {
       const s = JSON.parse(fs.readFileSync(path.join(SESSION_DIR, f), "utf8"));
+      // permite usar sessão mesmo de aposta (exclusiveBet) para destravar o feed local na VPS
       if (s && s.evoSessionId) {
         return {
           evoSessionId: s.evoSessionId,
@@ -423,7 +450,11 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+} else {
+  module.exports = { main };
+}

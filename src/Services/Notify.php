@@ -116,8 +116,12 @@ final class Notify
         }
     }
 
-    /** Notificação de evento de rodada (entrada/win/loss/stopWin/stopLoss), respeitando notifyPrefs. */
-    public static function notifyUser(int $userId, string $event, string $message): void
+    /**
+     * Notificação de evento de rodada (entrada/win/loss/stopWin/stopLoss), respeitando notifyPrefs.
+     * $game/$platform (ex.: "Double"/"BLAZE") aparecem no título pra diferenciar quando o
+     * cliente tem mais de um jogo/plataforma rodando ao mesmo tempo.
+     */
+    public static function notifyUser(int $userId, string $event, string $message, string $game = '', string $platform = ''): void
     {
         try {
             $user = Database::fetch('SELECT notifyPrefs FROM users WHERE id = ?', [$userId]);
@@ -126,7 +130,11 @@ final class Notify
             }
             $prefs = $user['notifyPrefs'] ? json_decode((string) $user['notifyPrefs'], true) : [];
             if (!empty($prefs['browser'][$event])) {
-                self::sendPushToUser($userId, self::EVENT_LABELS[$event] ?? $event, $message);
+                $title = self::EVENT_LABELS[$event] ?? $event;
+                if ($game !== '') {
+                    $title .= ' — ' . $game . ($platform !== '' ? " ({$platform})" : '');
+                }
+                self::sendPushToUser($userId, $title, $message);
             }
         } catch (\Throwable) {
         }

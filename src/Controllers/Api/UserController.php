@@ -11,13 +11,66 @@ use App\Bot\PatternAccuracy;
 use App\Database;
 use App\Models\ConfigRepository;
 use App\Models\UserRepository;
+use App\Services\BacBoBrowserBridge;
 use App\Services\BotCommandService;
 use App\Services\BotWorker;
+use App\Services\EvolutionBacBo;
 use App\Services\MercadoPago;
 use App\Services\TelegramBridge;
 
 final class UserController
 {
+    /** Crash removido do produto — sempre oculto na UI e bloqueado no backend. */
+    private static function withCrashHidden(string $hiddenGamesCsv): string
+    {
+        $parts = array_values(array_filter(array_map('trim', explode(',', $hiddenGamesCsv))));
+        if (!in_array('CRASH', $parts, true)) {
+            $parts[] = 'CRASH';
+        }
+        return implode(',', $parts);
+    }
+
+    /** @return list<string> */
+    private static function hiddenGamesList(string $configKey = 'HIDDEN_GAMES_CONTA_BLAZE'): array
+    {
+        $raw = self::withCrashHidden((string) (ConfigRepository::get($configKey, '') ?? ''));
+        return array_values(array_filter(array_map('trim', explode(',', $raw))));
+    }
+
+    /**
+     * Cláusula SQL pra excluir do relatório mensal (bot_entries) jogos ocultados
+     * pelo admin — cada plataforma (Blaze/Jonbet) tem sua própria lista.
+     * @return array{0: string, 1: list<mixed>}
+     */
+    private static function hiddenGamesSqlClause(int $uid, string $monthStart): array
+    {
+        $hiddenBlaze = self::hiddenGamesList('HIDDEN_GAMES_CONTA_BLAZE');
+        $hiddenJonbet = self::hiddenGamesList('HIDDEN_GAMES_CONTA_JONBET');
+        $params = [$uid, $monthStart];
+        $clauses = [];
+        if ($hiddenBlaze) {
+            $clauses[] = "(platform = 'BLAZE' AND gameType IN (" . implode(',', array_fill(0, count($hiddenBlaze), '?')) . '))';
+            $params = array_merge($params, $hiddenBlaze);
+        }
+        if ($hiddenJonbet) {
+            $clauses[] = "(platform = 'JONBET' AND gameType IN (" . implode(',', array_fill(0, count($hiddenJonbet), '?')) . '))';
+            $params = array_merge($params, $hiddenJonbet);
+        }
+        // Aba Day Trade oculta (HIDDEN_TABS) → some IQ Option / DAY_TRADE do relatório
+        $hiddenTabs = array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) (ConfigRepository::get('HIDDEN_TABS', '') ?? ''))
+        )));
+        $dayTradeHidden = in_array('day-trade', $hiddenTabs, true)
+            || in_array('DAY_TRADE', $hiddenTabs, true)
+            || in_array('daytrade', $hiddenTabs, true);
+        if ($dayTradeHidden) {
+            $clauses[] = "(platform = 'IQOPTION' OR gameType = 'DAY_TRADE')";
+        }
+        $sql = $clauses ? ' AND NOT (' . implode(' OR ', $clauses) . ')' : '';
+        return [$sql, $params];
+    }
+
     public function bot(): void
     {
         $user = Auth::requireUser();
@@ -34,16 +87,24 @@ final class UserController
                 json_response(['error' => 'O sistema está temporariamente pausado pelo administrador.'], 503);
             }
             $isDemo = ($user['accountType'] ?? 'DEMO') === 'DEMO';
-            $isBacBo = ($user['gameType'] ?? '') === 'BACBO';
-            // Bac Bo REAL também precisa de token Blaze (launch Evolution).
-            // DEMO Bac Bo pode rodar sem token (saldo virtual).
+            $gtStart = strtoupper((string) ($user['gameType'] ?? ''));
+            $isBacBo = $gtStart === 'BACBO' || $gtStart === 'BACBO_LIVE';
+            if ($gtStart === 'DAY_TRADE') {
+                json_response([
+                    'error' => 'Day Trade ainda em desenvolvimento. Em breve: operações binárias automatizadas.',
+                ], 400);
+            }
+            // Bac Bo / Ao Vivo REAL precisam de token Blaze (launch Evolution).
+            // DEMO pode rodar sem token (saldo virtual).
             if (!$isDemo && empty($user['token'])) {
                 json_response(['error' => 'Configure sua conta Blaze antes de iniciar.'], 400);
             }
             if (!UserRepository::licenseOk($user)) {
                 json_response(['error' => 'Você não possui uma licença ativa.'], 403);
             }
-            $settings = $isBacBo ? ($user['bacBoSettings'] ?? null) : ($user['settings'] ?? null);
+            $settings = $gtStart === 'BACBO_LIVE'
+                ? ($user['bacBoLiveSettings'] ?? null)
+                : ($gtStart === 'BACBO' ? ($user['bacBoSettings'] ?? null) : ($user['settings'] ?? null));
             $enter = ($settings['enterType'] ?? '') === 'PORCENTAGEM'
                 ? (float) ($settings['enterPercent'] ?? 0)
                 : (float) ($settings['enterValue'] ?? 0);
@@ -58,12 +119,13 @@ final class UserController
             $uid = (int) $user['id'];
             // Zera painel da sessão (vitórias/derrotas/lucro) — relatório do mês fica na tela inicial
             if ($isBacBo) {
+                $bacboVarsTable = $gtStart === 'BACBO_LIVE' ? 'bacbo_live_variables' : 'bacbo_variables';
                 // DEMO Bac Bo: banca virtual sempre reinicia em R$ 1.000
                 $demoBal = $isDemo ? 1000.0 : null;
-                \App\Bot\BotEntryLogger::resetSessionCounters('bacbo_variables', $uid, $demoBal);
+                \App\Bot\BotEntryLogger::resetSessionCounters($bacboVarsTable, $uid, $demoBal);
                 if ($isDemo) {
                     try {
-                        Database::update('bacbo_variables', [
+                        Database::update($bacboVarsTable, [
                             'balance' => 1000,
                             'firstBalance' => 1000,
                             'profit' => 0,
@@ -214,7 +276,7 @@ final class UserController
         $nums = [
             'enterValue', 'enterPercent', 'protectionValue', 'martingale', 'martingaleMultiplier',
             'whiteMultiplier', 'whiteEntryGale', 'whiteEntryGaleMultiplier', 'whiteEntryValue',
-            'whiteEntryPercent', 'quantityCycles',
+            'whiteEntryPercent', 'quantityCycles', 'columnReps',
         ];
         foreach ($bools as $b) {
             if (array_key_exists($b, $s)) {
@@ -233,6 +295,7 @@ final class UserController
     {
         $user = Auth::requireUser();
         $uid = (int) $user['id'];
+        self::ensureColumnRepsColumn();
         if (request_method() === 'GET') {
             $s = Database::fetch('SELECT * FROM settings WHERE ownerId = ?', [$uid]);
             if (!$s) {
@@ -245,7 +308,7 @@ final class UserController
             'strategyType', 'enterType', 'enterValue', 'enterPercent', 'stopType', 'stopGain', 'stopLoss',
             'protectionHand', 'protectionValue', 'martingale', 'whiteMartingale', 'martingaleMultiplier',
             'whiteMultiplier', 'whiteEntryGaleEnabled', 'whiteEntryGale', 'whiteEntryGaleMultiplier',
-            'whiteEntryType', 'whiteEntryValue', 'whiteEntryPercent', 'quantityCycles',
+            'whiteEntryType', 'whiteEntryValue', 'whiteEntryPercent', 'quantityCycles', 'columnReps',
             'skipFirstEntry', 'skipEntryAfterLoss',
         ];
         $data = [];
@@ -255,13 +318,35 @@ final class UserController
                 if (in_array($f, ['whiteEntryGaleEnabled', 'skipFirstEntry', 'skipEntryAfterLoss'], true)) {
                     $data[$f] = $body[$f] ? 1 : 0;
                 }
+                if ($f === 'columnReps') {
+                    $data[$f] = max(2, min(15, (int) $body[$f]));
+                }
             }
         }
         if ($data) {
+            self::ensureColumnRepsColumn();
             Database::update('settings', $data, 'ownerId = :oid', ['oid' => $uid]);
             BotCommandService::enqueue($uid, 'refresh-cache', 'BLAZE');
         }
         json_response($this->normalizeSettingsRow(Database::fetch('SELECT * FROM settings WHERE ownerId = ?', [$uid])));
+    }
+
+    /** Garante coluna settings.columnReps (roleta COLUNAS). */
+    private static function ensureColumnRepsColumn(): void
+    {
+        static $done = false;
+        if ($done) {
+            return;
+        }
+        $done = true;
+        try {
+            $row = Database::fetch("SHOW COLUMNS FROM settings LIKE 'columnReps'");
+            if (!$row) {
+                Database::query('ALTER TABLE settings ADD COLUMN columnReps INT NOT NULL DEFAULT 2');
+            }
+        } catch (\Throwable) {
+            /* ignore */
+        }
     }
 
     public function jonbetConfiguracoes(): void
@@ -294,10 +379,21 @@ final class UserController
 
     public function bacboConfiguracoes(): void
     {
+        $this->bacboRoomConfiguracoes('bacbo_settings');
+    }
+
+    public function bacboLiveConfiguracoes(): void
+    {
+        $this->bacboRoomConfiguracoes('bacbo_live_settings');
+    }
+
+    private function bacboRoomConfiguracoes(string $settingsTable): void
+    {
         $user = Auth::requireUser();
         $uid = (int) $user['id'];
+        UserRepository::ensureDefaults($uid);
         if (request_method() === 'GET') {
-            json_response($this->normalizeSettingsRow(Database::fetch('SELECT * FROM bacbo_settings WHERE ownerId = ?', [$uid])));
+            json_response($this->normalizeSettingsRow(Database::fetch('SELECT * FROM ' . $settingsTable . ' WHERE ownerId = ?', [$uid])));
         }
         $body = request_json();
         $fields = [
@@ -314,9 +410,9 @@ final class UserController
             }
         }
         if ($data) {
-            Database::update('bacbo_settings', $data, 'ownerId = :oid', ['oid' => $uid]);
+            Database::update($settingsTable, $data, 'ownerId = :oid', ['oid' => $uid]);
         }
-        json_response($this->normalizeSettingsRow(Database::fetch('SELECT * FROM bacbo_settings WHERE ownerId = ?', [$uid])));
+        json_response($this->normalizeSettingsRow(Database::fetch('SELECT * FROM ' . $settingsTable . ' WHERE ownerId = ?', [$uid])));
     }
 
     public function estrategias(): void
@@ -348,7 +444,10 @@ final class UserController
             $gameType = (string) input('gameType', 'DOUBLE');
             $strategyType = (string) input('strategyType', 'SEQUÊNCIA');
             if ($sequence === '' || $color === '') {
-                json_response(['error' => 'Sequência e cor são obrigatórios.'], 400);
+                json_response(['error' => 'Sequência e entrada (cor/números/vizinhos) são obrigatórios.'], 400);
+            }
+            if (strlen($color) > 500) {
+                json_response(['error' => 'Entrada muito longa (máx. 500 caracteres).'], 400);
             }
             $dup = Database::fetch(
                 'SELECT id FROM strategies WHERE ownerId = ? AND platform = ? AND gameType = ? AND strategyType = ? AND sequence = ?',
@@ -393,24 +492,36 @@ final class UserController
 
     public function bacboEstrategias(): void
     {
+        $this->bacboRoomEstrategias('bacbo_strategies', 'bacbo_settings', 'bacbo');
+    }
+
+    public function bacboLiveEstrategias(): void
+    {
+        $this->bacboRoomEstrategias('bacbo_live_strategies', 'bacbo_live_settings', 'bacbo-live');
+    }
+
+    private function bacboRoomEstrategias(string $stratTable, string $settingsTable, string $resultsKey): void
+    {
         $user = Auth::requireUser();
         $uid = (int) $user['id'];
+        UserRepository::ensureDefaults($uid);
         $method = request_method();
 
         if ($method === 'GET') {
             $strategyType = (string) ($_GET['strategyType'] ?? 'SEQUÊNCIA');
             $rows = Database::fetchAll(
-                'SELECT * FROM bacbo_strategies WHERE ownerId = ? AND strategyType = ? ORDER BY id DESC',
+                'SELECT * FROM ' . $stratTable . ' WHERE ownerId = ? AND strategyType = ? ORDER BY id DESC',
                 [$uid, $strategyType]
             );
-            $settings = Database::fetch('SELECT * FROM bacbo_settings WHERE ownerId = ?', [$uid]);
+            $settings = Database::fetch('SELECT * FROM ' . $settingsTable . ' WHERE ownerId = ?', [$uid]);
             $gales = (int) ($settings['martingale'] ?? 1);
+            $resultsTable = \App\Bot\Games\BacBoSource::resultsTable($resultsKey);
 
-            $rowsWithStats = array_map(function (array $row) use ($gales): array {
+            $rowsWithStats = array_map(function (array $row) use ($gales, $resultsTable): array {
                 try {
                     $seq = array_map(static fn ($v) => strtoupper(trim((string) $v)), explode(',', (string) $row['sequence']));
                     $target = strtoupper(trim((string) $row['color']));
-                    $res = PatternAccuracy::computeBacBoWithTimeout($seq, $target, $gales, 2800, 1);
+                    $res = PatternAccuracy::computeBacBoWithTimeout($seq, $target, $gales, 2800, 1, $resultsTable);
                     if ($res) {
                         return $row + [
                             'wins' => $res['hits'],
@@ -437,33 +548,33 @@ final class UserController
             }
 
             $dup = Database::fetch(
-                'SELECT id FROM bacbo_strategies WHERE ownerId = ? AND strategyType = ? AND sequence = ?',
+                'SELECT id FROM ' . $stratTable . ' WHERE ownerId = ? AND strategyType = ? AND sequence = ?',
                 [$uid, $strategyType, $sequence]
             );
             if ($dup) {
                 json_response(['error' => 'Você já tem uma estratégia cadastrada com essa mesma sequência.'], 409);
             }
 
-            $id = Database::insert('bacbo_strategies', [
+            $id = Database::insert($stratTable, [
                 'sequence' => $sequence,
                 'color' => $color,
                 'strategyType' => $strategyType,
                 'ownerId' => $uid,
             ]);
-            json_response(Database::fetch('SELECT * FROM bacbo_strategies WHERE id = ?', [$id]));
+            json_response(Database::fetch('SELECT * FROM ' . $stratTable . ' WHERE id = ?', [$id]));
         }
 
         if ($method === 'DELETE') {
             $id = (int) ($_GET['id'] ?? input('id', 0));
             if ($id) {
-                Database::delete('bacbo_strategies', 'id = ? AND ownerId = ?', [$id, $uid]);
+                Database::delete($stratTable, 'id = ? AND ownerId = ?', [$id, $uid]);
                 json_response(['success' => true]);
             }
             $strategyType = (string) ($_GET['strategyType'] ?? input('strategyType', ''));
             if ($strategyType === '') {
                 json_response(['error' => 'Parâmetros inválidos'], 400);
             }
-            Database::delete('bacbo_strategies', 'ownerId = ? AND strategyType = ?', [$uid, $strategyType]);
+            Database::delete($stratTable, 'ownerId = ? AND strategyType = ?', [$uid, $strategyType]);
             json_response(['success' => true]);
         }
         json_response(['error' => 'Método inválido'], 405);
@@ -482,10 +593,10 @@ final class UserController
             }
             if (input('gameType')) {
                 $gt = strtoupper(trim((string) input('gameType')));
-                $hidden = array_values(array_filter(array_map(
-                    'trim',
-                    explode(',', (string) (ConfigRepository::get('HIDDEN_GAMES', '') ?? ''))
-                )));
+                if ($gt === 'CRASH') {
+                    json_response(['error' => 'O jogo Crash foi removido. Use Double, Fortune ou Bac Bo.'], 400);
+                }
+                $hidden = self::hiddenGamesList();
                 if (in_array($gt, $hidden, true)) {
                     json_response(['error' => 'Este jogo está desabilitado pelo administrador.'], 403);
                 }
@@ -512,9 +623,13 @@ final class UserController
                     ]), 'ownerId = :oid', ['oid' => $uid]);
                 } catch (\Throwable) {
                 }
-                // Bac Bo tem tabela própria de variáveis
+                // Bac Bo / Ao Vivo têm tabelas próprias de variáveis
                 try {
                     Database::update('bacbo_variables', $demoReset, 'ownerId = :oid', ['oid' => $uid]);
+                } catch (\Throwable) {
+                }
+                try {
+                    Database::update('bacbo_live_variables', $demoReset, 'ownerId = :oid', ['oid' => $uid]);
                 } catch (\Throwable) {
                 }
             }
@@ -576,7 +691,15 @@ final class UserController
                 $data['jonbetAccountType'] = (string) input('jonbetAccountType');
             }
             if (input('jonbetGameType')) {
-                $data['jonbetGameType'] = (string) input('jonbetGameType');
+                $jgt = strtoupper(trim((string) input('jonbetGameType')));
+                if ($jgt === 'CRASH') {
+                    json_response(['error' => 'O jogo Crash foi removido da Jonbet. Use Double ou Fortune.'], 400);
+                }
+                $hiddenJonbet = self::hiddenGamesList('HIDDEN_GAMES_CONTA_JONBET');
+                if (in_array($jgt, $hiddenJonbet, true)) {
+                    json_response(['error' => 'Este jogo está desabilitado pelo administrador.'], 403);
+                }
+                $data['jonbetGameType'] = $jgt;
             }
             if ($data) {
                 UserRepository::update($uid, $data);
@@ -624,12 +747,16 @@ final class UserController
         $user = Auth::requireUser();
         $accountType = (string) ($user['accountType'] ?? 'DEMO');
         $gameType = (string) ($user['gameType'] ?? 'DOUBLE');
-        $isBacBo = $gameType === 'BACBO';
-        // Bac Bo tem tabela própria — não misturar com variables do Double
-        $varsTable = $isBacBo ? 'bacbo_variables' : 'variables';
-        $vars = $isBacBo
-            ? (is_array($user['bacBoVariables'] ?? null) ? $user['bacBoVariables'] : [])
-            : (is_array($user['variables'] ?? null) ? $user['variables'] : []);
+        $isBacBo = $gameType === 'BACBO' || $gameType === 'BACBO_LIVE';
+        // Bac Bo / Ao Vivo têm tabela própria — não misturar com variables do Double
+        $varsTable = $gameType === 'BACBO_LIVE'
+            ? 'bacbo_live_variables'
+            : ($gameType === 'BACBO' ? 'bacbo_variables' : 'variables');
+        $vars = $gameType === 'BACBO_LIVE'
+            ? (is_array($user['bacBoLiveVariables'] ?? null) ? $user['bacBoLiveVariables'] : [])
+            : ($gameType === 'BACBO'
+                ? (is_array($user['bacBoVariables'] ?? null) ? $user['bacBoVariables'] : [])
+                : (is_array($user['variables'] ?? null) ? $user['variables'] : []));
         $uid = (int) $user['id'];
 
         // DEMO: nunca puxa carteira real; garante banca virtual
@@ -771,6 +898,123 @@ final class UserController
         ]);
     }
 
+    /**
+     * Reseta o relatório do cliente: apaga todo o histórico de entradas
+     * (Double/Fortune, Bac Bo, Blaze + Jonbet) e redefine a banca inicial
+     * de cada plataforma com o saldo REAL atual (busca ao vivo; se não
+     * tiver token/saldo real disponível, mantém o saldo já registrado).
+     */
+    public function resetReport(): void
+    {
+        $user = Auth::requireUser();
+        $uid = (int) $user['id'];
+
+        Database::delete('bot_entries', 'ownerId = ?', [$uid]);
+        Database::delete('bacbo_bot_entries', 'ownerId = ?', [$uid]);
+        try {
+            Database::delete('bacbo_live_bot_entries', 'ownerId = ?', [$uid]);
+        } catch (\Throwable) {
+        }
+
+        $blazeBalance = null;
+        if (!empty($user['token'])) {
+            try {
+                $api = new \App\Bot\Blaze\BlazeAPI();
+                $api->setToken((string) $user['token']);
+                $blazeBalance = $api->extractBalance($api->getWallet());
+            } catch (\Throwable) {
+                $blazeBalance = null;
+            }
+        }
+
+        $jonbetBalance = null;
+        if (!empty($user['jonbetToken'])) {
+            try {
+                $api = new \App\Bot\Jonbet\JonbetAPI();
+                $api->setToken((string) $user['jonbetToken']);
+                $jonbetBalance = $api->extractBalance($api->getWallet());
+            } catch (\Throwable) {
+                $jonbetBalance = null;
+            }
+        }
+
+        $iqBalance = null;
+        if (!empty($user['iqSsid'])) {
+            try {
+                $b = \App\Services\IqOptionBridge::balances((string) $user['iqSsid'], true);
+                if (!empty($b['ok']) && !empty($b['balances'])) {
+                    $picked = \App\Controllers\Api\DayTradeController::pickBalance(
+                        $b['balances'],
+                        (string) ($user['iqAccountType'] ?? 'DEMO'),
+                        true
+                    );
+                    if ($picked) {
+                        $iqBalance = (float) ($picked['amount'] ?? 0);
+                    }
+                }
+            } catch (\Throwable) {
+                $iqBalance = null;
+            }
+        }
+
+        $resetVars = static function (string $table, ?float $realBalance, ?string $mode = null) use ($uid): void {
+            $bal = $realBalance ?? 0;
+            $data = [
+                'balance' => $bal,
+                'firstBalance' => $bal,
+                'profit' => 0,
+                'countWin' => 0,
+                'countLoss' => 0,
+                'monthCountWin' => 0,
+                'monthCountLoss' => 0,
+                'countMartingale' => 0,
+                'isGale' => 0,
+                'firstBalanceDate' => now(),
+            ];
+            try {
+                // colunas extras quando existirem
+                $data['monthStartBalance'] = $bal;
+                $data['monthStartDate'] = now();
+            } catch (\Throwable) {
+            }
+            if ($mode !== null) {
+                $data['firstBalanceMode'] = $mode;
+            }
+            Database::update($table, $data, 'ownerId = :oid', ['oid' => $uid]);
+        };
+
+        // Double/Fortune (Blaze) e Bac Bo usam o saldo real da Blaze;
+        // variables não tem firstBalanceMode obrigatório em bacbo_variables.
+        try {
+            $resetVars('variables', $blazeBalance);
+        } catch (\Throwable) {
+        }
+        try {
+            $resetVars('bacbo_variables', $blazeBalance);
+        } catch (\Throwable) {
+        }
+        try {
+            $resetVars('bacbo_live_variables', $blazeBalance);
+        } catch (\Throwable) {
+        }
+        try {
+            $resetVars('jonbet_variables', $jonbetBalance);
+        } catch (\Throwable) {
+        }
+        try {
+            $iqMode = strtoupper((string) ($user['iqAccountType'] ?? 'DEMO'));
+            $resetVars('daytrade_variables', $iqBalance, $iqMode);
+        } catch (\Throwable) {
+        }
+
+        json_response([
+            'success' => true,
+            'blazeBalance' => $blazeBalance,
+            'jonbetBalance' => $jonbetBalance,
+            'iqBalance' => $iqBalance,
+        ]);
+    }
+
     /** Port de platformSummary() em app/api/user/dashboard-summary/route.ts. */
     private function platformSummary(?array $vars, ?string $currentMode): array
     {
@@ -805,6 +1049,7 @@ final class UserController
         $blazeVars = Database::fetch('SELECT * FROM variables WHERE ownerId = ?', [$uid]);
         $jonbetVars = Database::fetch('SELECT * FROM jonbet_variables WHERE ownerId = ?', [$uid]);
         $bacboVars = Database::fetch('SELECT * FROM bacbo_variables WHERE ownerId = ?', [$uid]);
+        $bacboLiveVars = Database::fetch('SELECT * FROM bacbo_live_variables WHERE ownerId = ?', [$uid]);
 
         // Lucro em R$ só conta REAL; contadores de W/L do mês entram de qualquer modo.
         $accountType = (string) ($user['accountType'] ?? '');
@@ -812,16 +1057,17 @@ final class UserController
         $blaze = $this->platformSummary($accountType === 'DEMO' ? null : $blazeVars, $accountType ?: null);
         $jonbet = $this->platformSummary($jonbetAccountType === 'DEMO' ? null : $jonbetVars, $jonbetAccountType ?: null);
 
-        // Contadores mensais (painel da sessão zera ao iniciar; o mês permanece)
-        $monthWin = (int) ($blazeVars['monthCountWin'] ?? 0)
-            + (int) ($jonbetVars['monthCountWin'] ?? 0)
-            + (int) ($bacboVars['monthCountWin'] ?? 0);
-        $monthLoss = (int) ($blazeVars['monthCountLoss'] ?? 0)
-            + (int) ($jonbetVars['monthCountLoss'] ?? 0)
-            + (int) ($bacboVars['monthCountLoss'] ?? 0);
-
-        // Contagem real do mês a partir de bot_entries (fonte do histórico analítico)
+        // Contagem e lucro do mês vêm de bot_entries (fonte confiável — só REAL,
+        // sem jogos ocultados pelo admin). O fallback por saldo (variables.*)
+        // só entra se a query falhar de verdade: comparar saldo atual com
+        // monthStartBalance é frágil e já causou lucro mensal absurdo quando a
+        // banca foi resetada/testada manualmente sem essa coluna acompanhar.
         $monthStart = date('Y-m-01 00:00:00');
+        [$hiddenSql, $params] = self::hiddenGamesSqlClause($uid, $monthStart);
+        $entriesAvailable = false;
+        $monthWin = 0;
+        $monthLoss = 0;
+        $combinedMonthProfit = 0.0;
         try {
             $agg = Database::fetch(
                 "SELECT
@@ -829,38 +1075,113 @@ final class UserController
                     SUM(CASE WHEN type = 'LOSS' THEN 1 ELSE 0 END) AS losses,
                     COALESCE(SUM(CASE WHEN type IN ('WIN','LOSS') THEN profit ELSE 0 END), 0) AS profitSum
                  FROM bot_entries
-                 WHERE ownerId = ? AND createdAt >= ? AND type IN ('WIN','LOSS')",
-                [$uid, $monthStart]
+                 WHERE ownerId = ? AND createdAt >= ? AND type IN ('WIN','LOSS') AND accountType = 'REAL'" . $hiddenSql,
+                $params
             );
             if ($agg) {
-                $entryWins = (int) ($agg['wins'] ?? 0);
-                $entryLosses = (int) ($agg['losses'] ?? 0);
-                // Prefer entries if available (mais fiéis ao histórico listado)
-                if ($entryWins + $entryLosses > 0) {
-                    $monthWin = $entryWins;
-                    $monthLoss = $entryLosses;
-                }
+                $monthWin = (int) ($agg['wins'] ?? 0);
+                $monthLoss = (int) ($agg['losses'] ?? 0);
+                $combinedMonthProfit = round((float) ($agg['profitSum'] ?? 0), 2);
+                $entriesAvailable = true;
             }
         } catch (\Throwable) {
-            $agg = null;
+            $entriesAvailable = false;
         }
 
-        $combinedMonthProfit = round(
-            (float) ($blaze['profitMonth'] ?? 0) + (float) ($jonbet['profitMonth'] ?? 0),
-            2
-        );
-        if ($agg && isset($agg['profitSum'])) {
-            // Se entries têm P/L de rodada, usa a soma do mês
-            $fromEntries = round((float) $agg['profitSum'], 2);
-            if (abs($fromEntries) > 0.001 || ($monthWin + $monthLoss) > 0) {
-                $combinedMonthProfit = $fromEntries;
-            }
+        $daytradeVars = null;
+        try {
+            $daytradeVars = Database::fetch('SELECT * FROM daytrade_variables WHERE ownerId = ?', [$uid]);
+        } catch (\Throwable) {
+            $daytradeVars = null;
+        }
+        $iqAccountType = strtoupper((string) ($user['iqAccountType'] ?? 'DEMO'));
+        if (!in_array($iqAccountType, ['DEMO', 'REAL'], true)) {
+            $iqAccountType = 'DEMO';
+        }
+        // Aba Day Trade oculta → não expõe banca/lucro IQ no dashboard
+        $hiddenTabsDash = array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) (ConfigRepository::get('HIDDEN_TABS', '') ?? ''))
+        )));
+        $dayTradeTabHidden = in_array('day-trade', $hiddenTabsDash, true)
+            || in_array('DAY_TRADE', $hiddenTabsDash, true)
+            || in_array('daytrade', $hiddenTabsDash, true);
+
+        // Lucro no relatório só conta REAL (igual Blaze/Jonbet)
+        $daytrade = $dayTradeTabHidden
+            ? $this->platformSummary(null, null)
+            : $this->platformSummary(
+                $iqAccountType === 'DEMO' ? null : $daytradeVars,
+                $iqAccountType ?: null
+            );
+        // Card de banca IQ: SEMPRE usa o saldo gravado (não aplica filtro de modo)
+        // — evita zerar o card quando firstBalanceMode ficou defasado.
+        $dtBal = $dayTradeTabHidden ? 0.0 : (float) ($daytradeVars['balance'] ?? 0);
+        $dtFirst = $dayTradeTabHidden ? 0.0 : (float) ($daytradeVars['firstBalance'] ?? $dtBal);
+        // se firstBalance ainda é placeholder (10000) e saldo real é outro, ancora no saldo
+        if (!$dayTradeTabHidden && $dtFirst >= 9999 && $dtBal > 0 && $dtBal < 1000) {
+            $dtFirst = $dtBal;
+        }
+        $daytradeBank = $dayTradeTabHidden
+            ? [
+                'balance' => 0.0,
+                'firstBalance' => 0.0,
+                'countWin' => 0,
+                'countLoss' => 0,
+                'monthCountWin' => 0,
+                'monthCountLoss' => 0,
+                'profitToday' => 0.0,
+                'lossToday' => 0.0,
+                'profitMonth' => 0.0,
+                'sessionProfit' => 0.0,
+            ]
+            : [
+                'balance' => $dtBal,
+                'firstBalance' => $dtFirst,
+                'countWin' => (int) ($daytradeVars['countWin'] ?? 0),
+                'countLoss' => (int) ($daytradeVars['countLoss'] ?? 0),
+                'monthCountWin' => (int) ($daytradeVars['monthCountWin'] ?? 0),
+                'monthCountLoss' => (int) ($daytradeVars['monthCountLoss'] ?? 0),
+                'profitToday' => round($dtBal - $dtFirst, 2),
+                'lossToday' => min(round($dtBal - $dtFirst, 2), 0),
+                'profitMonth' => round($dtBal - (float) ($daytradeVars['monthStartBalance'] ?? $dtFirst), 2),
+                'sessionProfit' => (float) ($daytradeVars['profit'] ?? 0),
+            ];
+        // se REAL e daytrade veio zerado por modo, usa bank
+        if (!$dayTradeTabHidden && $iqAccountType === 'REAL' && (float) ($daytrade['balance'] ?? 0) <= 0 && $dtBal > 0) {
+            $daytrade = $daytradeBank;
+        }
+
+        if (!$entriesAvailable) {
+            $monthWin = (int) ($blazeVars['monthCountWin'] ?? 0)
+                + (int) ($jonbetVars['monthCountWin'] ?? 0)
+                + (int) ($bacboVars['monthCountWin'] ?? 0)
+                + (int) ($bacboLiveVars['monthCountWin'] ?? 0)
+                + ($dayTradeTabHidden ? 0 : (int) ($daytradeVars['monthCountWin'] ?? 0));
+            $monthLoss = (int) ($blazeVars['monthCountLoss'] ?? 0)
+                + (int) ($jonbetVars['monthCountLoss'] ?? 0)
+                + (int) ($bacboVars['monthCountLoss'] ?? 0)
+                + (int) ($bacboLiveVars['monthCountLoss'] ?? 0)
+                + ($dayTradeTabHidden ? 0 : (int) ($daytradeVars['monthCountLoss'] ?? 0));
+            $combinedMonthProfit = round(
+                (float) ($blaze['profitMonth'] ?? 0)
+                + (float) ($jonbet['profitMonth'] ?? 0)
+                + ($dayTradeTabHidden ? 0.0 : (float) ($daytrade['profitMonth'] ?? 0)),
+                2
+            );
         }
 
         json_response([
             'blaze' => $blaze,
             'jonbet' => $jonbet,
-            'combinedProfitToday' => round($blaze['profitToday'] + $jonbet['profitToday'], 2),
+            'daytrade' => $daytrade,
+            'daytradeBank' => $daytradeBank,
+            'iqAccountType' => $iqAccountType === 'REAL' ? 'REAL' : 'DEMO',
+            'dayTradeHidden' => $dayTradeTabHidden,
+            'combinedProfitToday' => round(
+                $blaze['profitToday'] + $jonbet['profitToday'] + ($dayTradeTabHidden ? 0.0 : (float) ($daytrade['profitToday'] ?? 0)),
+                2
+            ),
             'combinedProfitMonth' => $combinedMonthProfit,
             'monthCountWin' => $monthWin,
             'monthCountLoss' => $monthLoss,
@@ -873,13 +1194,15 @@ final class UserController
         $user = Auth::requireUser();
         $uid = (int) $user['id'];
         // Relatório do mês corrente (últimos 500 para performance)
+        // Só conta REAL (accountType) e ignora jogos desabilitados pelo admin.
         $monthStart = date('Y-m-01 00:00:00');
+        [$hiddenSql, $params] = self::hiddenGamesSqlClause($uid, $monthStart);
         try {
             $rows = Database::fetchAll(
                 "SELECT * FROM bot_entries
-                 WHERE ownerId = ? AND createdAt >= ? AND type IN ('WIN','LOSS','GALE')
+                 WHERE ownerId = ? AND createdAt >= ? AND type IN ('WIN','LOSS','GALE') AND accountType = 'REAL'" . $hiddenSql . "
                  ORDER BY id DESC LIMIT 500",
-                [$uid, $monthStart]
+                $params
             );
         } catch (\Throwable) {
             $rows = Database::fetchAll(
@@ -919,14 +1242,14 @@ final class UserController
     public function publicConfig(): void
     {
         $hidden = (string) (ConfigRepository::get('HIDDEN_STRATEGY_TYPES', '') ?? '');
-        $hiddenGames = (string) (ConfigRepository::get('HIDDEN_GAMES', '') ?? '');
+        $hiddenGames = self::hiddenGamesList();
         json_response([
             'instagram' => ConfigRepository::get('SOCIAL_INSTAGRAM', '') ?? '',
             'telegram' => ConfigRepository::get('SOCIAL_TELEGRAM', '') ?? '',
             'github' => ConfigRepository::get('SOCIAL_GITHUB', '') ?? '',
             'appName' => env('APP_NAME', 'AutoWin'),
             'hiddenStrategyTypes' => array_values(array_filter(array_map('trim', explode(',', $hidden)))),
-            'hiddenGames' => array_values(array_filter(array_map('trim', explode(',', $hiddenGames)))),
+            'hiddenGames' => $hiddenGames,
         ]);
     }
 
@@ -937,7 +1260,7 @@ final class UserController
             'plans' => is_array($options) ? $options : [],
             'trialHours' => (float) (ConfigRepository::get('TRIAL_HOURS', '1') ?? '1'),
             'hiddenTabs' => ConfigRepository::get('HIDDEN_TABS', '') ?? '',
-            'hiddenGames' => ConfigRepository::get('HIDDEN_GAMES', '') ?? '',
+            'hiddenGames' => self::withCrashHidden((string) (ConfigRepository::get('HIDDEN_GAMES', '') ?? '')),
             'hiddenStrategies' => ConfigRepository::get('HIDDEN_STRATEGY_TYPES', '') ?? '',
             'social' => [
                 'instagram' => ConfigRepository::get('SOCIAL_INSTAGRAM', '') ?? '',
@@ -1346,5 +1669,206 @@ final class UserController
         if (is_file($path)) {
             @unlink($path);
         }
+    }
+    /**
+     * OPTIONS /api/user/bacbo-bridge/* — preflight CORS (script no domínio do jogo).
+     */
+    public function bacboBridgeCors(): void
+    {
+        cors_bridge_preflight();
+    }
+
+    /**
+     * GET /api/user/bacbo-bridge/poll
+     * Chamado pelo script no navegador do cliente para pegar a aposta pendente mais antiga.
+     * Retorna a aposta e muda status para 'sent' (para não duplicar).
+     * Auth: cookie (mesma origem) OU Authorization: Bearer (device/bridge token).
+     */
+    public function bacboBridgePoll(): void
+    {
+        $cors = cors_bridge_headers();
+        $uid = Auth::requireUserIdFromCookieOrDevice($cors);
+        BacBoBrowserBridge::recordPoll($uid);
+        $row = BacBoBrowserBridge::nextPending($uid);
+        if (!$row) {
+            json_response(['pending' => false], 200, $cors);
+        }
+        json_response([
+            'pending' => true,
+            'betId'   => (int) $row['id'],
+            'spot'    => (string) $row['spot'],
+            'amount'  => (float) $row['amount'],
+            'protectionAmount' => (float) ($row['protectionAmount'] ?? 0),
+        ], 200, $cors);
+    }
+
+    /**
+     * POST /api/user/bacbo-bridge/result
+     * Body: { betId: int, ok: bool, result: object }
+     * Chamado pelo script no navegador após confirmar ou falhar o envio da aposta.
+     */
+    public function bacboBridgeResult(): void
+    {
+        $cors = cors_bridge_headers();
+        $uid  = Auth::requireUserIdFromCookieOrDevice($cors);
+        $body = json_decode((string) file_get_contents('php://input'), true) ?? [];
+        $betId  = (int) ($body['betId'] ?? 0);
+        $ok     = !empty($body['ok']);
+        $result = is_array($body['result'] ?? null) ? $body['result'] : ['ok' => $ok];
+        if ($betId <= 0) {
+            json_response(['error' => 'betId inválido'], 400, $cors);
+        }
+        $saved = BacBoBrowserBridge::reportResult($uid, $betId, $ok, $result);
+        json_response(['saved' => $saved], 200, $cors);
+    }
+
+    /**
+     * GET /api/user/bacbo-bridge/status
+     * Painel: bridge do browser e/ou app Android online?
+     */
+    public function bacboBridgeStatus(): void
+    {
+        Auth::requireUserId();
+        $uid = (int) Auth::userId();
+        $st = BacBoBrowserBridge::status($uid);
+        json_response(['ok' => true] + $st);
+    }
+
+    /**
+     * POST /api/user/bacbo-bridge/script
+     * Gera (ou reusa fluxo de) token de bridge + snippet pronto pra colar no
+     * console da mesa Bac Bo (Blaze/Evolution). Equivalente prático ao
+     * auto_bet do bacbominer: aposta sai do IP/navegador do usuário.
+     */
+    public function bacboBridgeScript(): void
+    {
+        Auth::requireUserId();
+        $uid = (int) Auth::userId();
+        $body = json_decode((string) file_get_contents('php://input'), true) ?? [];
+        $label = trim((string) ($body['deviceLabel'] ?? '')) ?: 'Browser Bridge';
+
+        // Revoga tokens antigos com o mesmo label (evita acumular “browser bridge”)
+        Database::query(
+            "UPDATE device_tokens SET revokedAt = ? WHERE ownerId = ? AND revokedAt IS NULL "
+            . "AND deviceLabel = ?",
+            [now(), $uid, $label]
+        );
+
+        $raw = bin2hex(random_bytes(32));
+        Database::insert('device_tokens', [
+            'ownerId' => $uid,
+            'tokenHash' => hash('sha256', $raw),
+            'deviceLabel' => $label,
+        ]);
+
+        $base = public_base_url();
+        // Inline completo: CSP da Evolution costuma bloquear <script src> externo.
+        $bridgePath = public_path('bacbo-bridge.js');
+        $bridgeBody = is_file($bridgePath) ? (string) file_get_contents($bridgePath) : '';
+        if ($bridgeBody === '') {
+            json_response(['error' => 'Arquivo bacbo-bridge.js não encontrado no servidor.'], 500);
+        }
+        $script = "window.__AUTOWIN_BRIDGE__=" . json_encode([
+            'baseUrl' => $base,
+            'token' => $raw,
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . ";\n"
+            . "if(window.__stopBacBoBridge){try{window.__stopBacBoBridge()}catch(e){}}\n"
+            . $bridgeBody;
+
+        json_response([
+            'ok' => true,
+            'baseUrl' => $base,
+            'token' => $raw,
+            'script' => $script,
+            'hint' => 'Abra o Bac Bo na Blaze, F12 → Console, cole o script e mantenha a aba aberta.',
+        ]);
+    }
+
+    /**
+     * POST /api/user/device/pair
+     * Gera um token novo pro app Android (motor de aposta local) e devolve
+     * o valor cru (só desta vez — só o hash fica salvo).
+     */
+    public function devicePair(): void
+    {
+        Auth::requireUserId();
+        $uid = (int) Auth::userId();
+        $body = json_decode((string) file_get_contents('php://input'), true) ?? [];
+        $label = trim((string) ($body['deviceLabel'] ?? '')) ?: null;
+
+        $raw = bin2hex(random_bytes(32));
+        Database::insert('device_tokens', [
+            'ownerId' => $uid,
+            'tokenHash' => hash('sha256', $raw),
+            'deviceLabel' => $label,
+        ]);
+
+        json_response(['ok' => true, 'token' => $raw]);
+    }
+
+    /**
+     * POST /api/user/device/unpair
+     * Body: { deviceId: int } — revoga um dispositivo pareado do usuário logado.
+     */
+    public function deviceUnpair(): void
+    {
+        Auth::requireUserId();
+        $uid = (int) Auth::userId();
+        $body = json_decode((string) file_get_contents('php://input'), true) ?? [];
+        $deviceId = (int) ($body['deviceId'] ?? 0);
+        if ($deviceId <= 0) {
+            json_response(['error' => 'deviceId inválido'], 400);
+        }
+        $row = Database::fetch('SELECT id FROM device_tokens WHERE id = ? AND ownerId = ?', [$deviceId, $uid]);
+        if (!$row) {
+            json_response(['ok' => false, 'error' => 'Dispositivo não encontrado.'], 404);
+        }
+        Database::update('device_tokens', ['revokedAt' => now()], 'id = ?', [$deviceId]);
+        json_response(['ok' => true]);
+    }
+
+    /**
+     * GET /api/user/device/status
+     * Status do(s) dispositivo(s) pareado(s) do usuário logado — usado pela
+     * UI (portal-src/pages/premium-bacbo.tsx) pra mostrar conectado/desconectado.
+     */
+    public function deviceStatus(): void
+    {
+        Auth::requireUserId();
+        $uid = (int) Auth::userId();
+        $rows = Database::fetchAll(
+            'SELECT id, deviceLabel, createdAt, lastSeenAt FROM device_tokens '
+            . 'WHERE ownerId = ? AND revokedAt IS NULL ORDER BY id DESC',
+            [$uid]
+        );
+        // "Conectado" = viu o dispositivo nos últimos 30s (poll nativo é a cada 2s).
+        $connected = false;
+        foreach ($rows as $r) {
+            if (!empty($r['lastSeenAt']) && strtotime((string) $r['lastSeenAt']) >= time() - 30) {
+                $connected = true;
+                break;
+            }
+        }
+        json_response(['ok' => true, 'connected' => $connected, 'devices' => $rows]);
+    }
+
+    /**
+     * GET /api/user/bacbo-bridge/entry-url
+     * Chamado pelo app Android (celular do cliente) ao iniciar o motor local:
+     * devolve a URL de entrada da Evolution pra WebView navegar de verdade
+     * (login Blaze feito aqui no servidor, o resto é o celular quem segue).
+     */
+    public function bacboBridgeEntryUrl(): void
+    {
+        $cors = cors_bridge_headers();
+        $uid = Auth::requireUserIdFromCookieOrDevice($cors);
+        $user = UserRepository::find($uid);
+        $token = (string) ($user['token'] ?? '');
+        if ($token === '') {
+            json_response(['ok' => false, 'error' => 'Conta Blaze não conectada.'], 400, $cors);
+        }
+        $slug = (string) ($user['gameType'] ?? '') === 'BACBO_LIVE' ? 'bac-bo-ao-vivo' : 'bac-bo';
+        $res = EvolutionBacBo::getEntryUrl($uid, $token, $slug);
+        json_response($res, 200, $cors);
     }
 }

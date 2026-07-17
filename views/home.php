@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>AUTOWIN | Painel</title>
-<meta name="description" content="AUTOWIN — Double &amp; Crash Bot">
+<meta name="description" content="AUTOWIN — Double, Fortune &amp; Bac Bo Bot">
 <link rel="icon" href="/logo.jpg?v=2" type="image/jpeg" sizes="any">
 <link rel="icon" href="/favicon.ico?v=2" sizes="32x32">
 <link rel="icon" href="/icon.svg?v=2" type="image/svg+xml">
@@ -144,7 +144,7 @@
                 <div class="w-12 h-12 rounded-xl bg-red-500/10 flex items-center justify-center text-lg font-black text-red-500 shadow-[0_0_15px_rgba(239,68,68,0.1)] group-hover/item:scale-105 transition-transform">B</div>
                 <div>
                   <h4 class="text-sm font-black text-white tracking-wider">BLAZE</h4>
-                  <p class="text-[10px] text-gray-500">Double / Crash</p>
+                  <p class="text-[10px] text-gray-500">Double / Bac Bo</p>
                 </div>
               </div>
               <div class="flex items-center gap-2 bg-red-500/10 border border-red-500/20 px-3 py-1 rounded-full">
@@ -158,7 +158,7 @@
                 <div class="w-12 h-12 rounded-xl bg-yellow-500/10 flex items-center justify-center text-lg font-black text-yellow-500 shadow-[0_0_15px_rgba(234,179,8,0.1)] group-hover/item:scale-105 transition-transform">J</div>
                 <div>
                   <h4 class="text-sm font-black text-white tracking-wider">JONBET</h4>
-                  <p class="text-[10px] text-gray-500">Double / Crash</p>
+                  <p class="text-[10px] text-gray-500">Double / Bac Bo</p>
                 </div>
               </div>
               <div class="flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/20 px-3 py-1 rounded-full">
@@ -491,7 +491,7 @@
                 '<span class="text-gray-500 text-xs font-bold uppercase tracking-wider block mt-1">por ' + plan.days + ' dias de acesso</span>' +
               '</div>' +
               '<ul class="space-y-4 text-left text-xs sm:text-sm text-gray-400 mb-8">' +
-                ['Acesso aos bots Blaze e Jonbet', 'Suporte a Double e Crash', 'Copiador de salas de Telegram VIP', 'Configuração ilimitada de Gales', 'Testes sem limites no modo DEMO']
+                ['Acesso aos bots Blaze e Jonbet', 'Suporte a Double, Fortune e Bac Bo', 'Copiador de salas de Telegram VIP', 'Configuração ilimitada de Gales', 'Testes sem limites no modo DEMO']
                   .map(function (t) {
                     return '<li class="flex items-center gap-3"><span class="w-5 h-5 rounded-full bg-green-500/10 border border-green-500/20 flex items-center justify-center text-[10px] text-green-400 font-bold">✓</span> <span>' + t + '</span></li>';
                   }).join('') +

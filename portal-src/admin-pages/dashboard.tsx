@@ -16,8 +16,9 @@ function pctDelta(current: number, previous: number): number | null {
 export default function AdminDashboardPage() {
   const [stats, setStats] = useState<any>(null)
   const [error, setError] = useState("")
+  const [resettingRevenue, setResettingRevenue] = useState(false)
 
-  useEffect(() => {
+  function loadStats() {
     fetch("/api/admin/dashboard-stats")
       .then((r) => r.json())
       .then((d) => {
@@ -25,7 +26,26 @@ export default function AdminDashboardPage() {
         else setStats(d)
       })
       .catch(() => setError("Falha ao carregar métricas"))
+  }
+
+  useEffect(() => {
+    loadStats()
   }, [])
+
+  async function handleResetRevenue() {
+    if (!confirm("Isso zera o Faturamento Mensal exibido no painel (pagamentos anteriores a agora somem da métrica). O acesso dos clientes PAID não é afetado. Continuar?")) return
+    setResettingRevenue(true)
+    try {
+      await fetch("/api/admin/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ REVENUE_RESET_AT: new Date().toISOString() }),
+      })
+      loadStats()
+    } finally {
+      setResettingRevenue(false)
+    }
+  }
 
   if (error) return <div className="text-red-400 py-8">{error}</div>
   if (!stats) return <div className="text-gray-400 py-8">Carregando indicadores...</div>
@@ -33,9 +53,8 @@ export default function AdminDashboardPage() {
   const maxRegs = Math.max(...stats.last7DaysRegs.map((d: any) => d.count), 1)
   const chartHeight = 120
   const maxRev = Math.max(...stats.revenue.monthsRevenue.map((m: any) => m.value), 1)
-  const totalGamesPicked = (stats.games.double + stats.games.crash + stats.games.fortune) || 1
+  const totalGamesPicked = (stats.games.double + stats.games.fortune) || 1
   const pctDouble = Math.round((stats.games.double / totalGamesPicked) * 100)
-  const pctCrash = Math.round((stats.games.crash / totalGamesPicked) * 100)
   const pctFortune = Math.round((stats.games.fortune / totalGamesPicked) * 100)
 
   return (
@@ -59,15 +78,25 @@ export default function AdminDashboardPage() {
           value={stats.totalUsers.toLocaleString("pt-BR")}
           delta={{ text: `+${stats.newUsersThisMonth} este mês`, tone: stats.newUsersThisMonth > 0 ? "up" : "neutral" }}
         />
-        <StatsCard
-          label="Faturamento Mensal"
-          value={money(stats.revenue.valueThisMonth)}
-          delta={(() => {
-            const pct = pctDelta(stats.revenue.valueThisMonth, stats.revenue.valueLastMonth)
-            if (pct === null) return undefined
-            return { text: `${pct >= 0 ? "+" : ""}${pct}% vs mês anterior`, tone: pct >= 0 ? "up" : "down" }
-          })()}
-        />
+        <div className="relative">
+          <StatsCard
+            label="Faturamento Mensal"
+            value={money(stats.revenue.valueThisMonth)}
+            delta={(() => {
+              const pct = pctDelta(stats.revenue.valueThisMonth, stats.revenue.valueLastMonth)
+              if (pct === null) return undefined
+              return { text: `${pct >= 0 ? "+" : ""}${pct}% vs mês anterior`, tone: pct >= 0 ? "up" : "down" }
+            })()}
+          />
+          <button
+            onClick={handleResetRevenue}
+            disabled={resettingRevenue}
+            title="Zera o faturamento exibido (não afeta o acesso dos clientes)"
+            className="absolute top-3 right-3 text-[10px] font-bold bg-gray-950/60 hover:bg-red-500/10 border border-gray-800 hover:border-red-500/30 disabled:opacity-50 text-gray-500 hover:text-red-400 px-2 py-1 rounded-lg transition-all"
+          >
+            {resettingRevenue ? "..." : "🔄 Resetar"}
+          </button>
+        </div>
         <StatsCard
           label="Usuários em Trial"
           value={stats.plansDist.trial.toLocaleString("pt-BR")}
@@ -177,17 +206,6 @@ export default function AdminDashboardPage() {
               </div>
               <div className="w-full bg-gray-800 h-2.5 rounded-full overflow-hidden">
                 <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${pctDouble}%` }} />
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold text-gray-300 flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-blue-500" /> Crash
-                </span>
-                <span className="text-gray-400 font-bold">{stats.games.crash} ({pctCrash}%)</span>
-              </div>
-              <div className="w-full bg-gray-800 h-2.5 rounded-full overflow-hidden">
-                <div className="bg-blue-500 h-full rounded-full" style={{ width: `${pctCrash}%` }} />
               </div>
             </div>
             <div className="space-y-1.5">

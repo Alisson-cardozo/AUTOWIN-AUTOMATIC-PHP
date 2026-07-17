@@ -15,15 +15,17 @@ const entriesDir = path.join(root, "portal-src", "entries")
 const outDir = path.join(root, "public", "assets", "portal")
 const shims = path.join(root, "portal-src", "shims")
 
-if (!fs.existsSync(original)) {
-  console.error("Original não encontrado em:", original)
-  process.exit(1)
+const hasOriginal = fs.existsSync(original)
+if (!hasOriginal) {
+  console.warn("Original não encontrado em:", original, "— usando só portal-src/ (sem sync com upstream).")
 }
 
 const pages = [
   "inicio",
   "conta",
   "jonbet",
+  "day-trade",
+  "premium-day-trade",
   "premium",
   "premium-jonbet",
   "jogos-premium",
@@ -32,6 +34,7 @@ const pages = [
   "aviso",
   "licenca",
   "premium-bacbo",
+  "premium-bacbo-live",
   "premium-futebol",
   "premium-roletas",
   "estrategias",
@@ -464,10 +467,9 @@ const adminPagesDir = path.join(root, "portal-src", "admin-pages")
 const adminOriginal = [
   "financeiro",
   "comunicacao",
-  "padroes",
   "sistema",
 ]
-const adminLocal = ["dashboard", "users", "configuracoes"]
+const adminLocal = ["dashboard", "users", "configuracoes", "proxy", "padroes"]
 
 const adminEntries = []
 

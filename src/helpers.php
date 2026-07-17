@@ -48,6 +48,49 @@ function json_response(mixed $data, int $status = 200, array $headers = []): nev
 }
 
 /**
+ * URL pública do painel (APP_URL no .env ou host da request).
+ * Usada pelo browser bridge (script no domínio da Evolution/Blaze).
+ */
+function public_base_url(): string
+{
+    $fromEnv = trim((string) env('APP_URL', ''));
+    if ($fromEnv !== '') {
+        return rtrim($fromEnv, '/');
+    }
+    $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || strtolower((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https';
+    $host = (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
+    return ($https ? 'https' : 'http') . '://' . $host;
+}
+
+/**
+ * Headers CORS pras rotas do Bac Bo bridge — o script roda no domínio do jogo
+ * (Evolution/Blaze) e chama a API do Autowin com Authorization: Bearer.
+ *
+ * @return array<string, string>
+ */
+function cors_bridge_headers(): array
+{
+    $origin = (string) ($_SERVER['HTTP_ORIGIN'] ?? '*');
+    if ($origin === '') {
+        $origin = '*';
+    }
+    return [
+        'Access-Control-Allow-Origin' => $origin,
+        'Access-Control-Allow-Methods' => 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers' => 'Authorization, Content-Type',
+        'Access-Control-Max-Age' => '86400',
+        'Vary' => 'Origin',
+    ];
+}
+
+/** Responde preflight OPTIONS do browser bridge e encerra. */
+function cors_bridge_preflight(): never
+{
+    json_response(['ok' => true], 200, cors_bridge_headers());
+}
+
+/**
  * Envia JSON e libera a conexão HTTP, permitindo continuar o PHP
  * (ex.: login Blaze com captcha demorado sem o front ficar esperando).
  */

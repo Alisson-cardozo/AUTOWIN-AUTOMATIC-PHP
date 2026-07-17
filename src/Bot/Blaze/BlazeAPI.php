@@ -172,19 +172,29 @@ final class BlazeAPI
 
     /**
      * Abre sessão Bac Bo (Evolution).
-     * Tenta bac-bo-ao-vivo (mesa ao vivo / Python) e depois bac-bo.
-     * Retorno costuma trazer URL de launch (entry/JSESSIONID → EVOSESSIONID via redirect).
      *
+     * @param string $currencyType BRL
+     * @param string|null $preferredSlug 'bac-bo' | 'bac-bo-ao-vivo' — prioriza a sala pedida
      * @return array<string,mixed>
      */
-    public function playBacBo(string $currencyType = 'BRL'): array
+    public function playBacBo(string $currencyType = 'BRL', ?string $preferredSlug = null): array
     {
         $body = ['selected_currency_type' => $currencyType];
-        // Sala real do portal: /pt/games/bac-bo → BacBo00000000001
-        $paths = [
-            '/api/games/bac-bo/play',
-            '/api/games/bac-bo-ao-vivo/play',
-        ];
+        $slug = $preferredSlug !== null && $preferredSlug !== ''
+            ? trim($preferredSlug, '/')
+            : 'bac-bo';
+        // Ordem: sala pedida primeiro; fallback na outra se falhar
+        if ($slug === 'bac-bo-ao-vivo') {
+            $paths = [
+                '/api/games/bac-bo-ao-vivo/play',
+                '/api/games/bac-bo/play',
+            ];
+        } else {
+            $paths = [
+                '/api/games/bac-bo/play',
+                '/api/games/bac-bo-ao-vivo/play',
+            ];
+        }
         $last = [];
         foreach ($paths as $path) {
             try {

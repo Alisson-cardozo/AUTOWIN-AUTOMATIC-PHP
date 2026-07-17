@@ -88,6 +88,8 @@ function toBRDate(iso: string): string {
 
 function brTodayStr(): string { return toBRDate(new Date().toISOString()) }
 
+function brYesterdayStr(): string { return toBRDate(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()) }
+
 function isoRange(daysBack: number) {
   const end   = new Date()
   const start = new Date(end.getTime() - daysBack * 24 * 60 * 60 * 1000)
@@ -151,30 +153,12 @@ async function fetchDoubleAggregate(days = 1, maxPages = 30): Promise<DoubleResu
   return d.records ?? []
 }
 
-async function fetchCrashAggregate(days = 7, maxPages = 30): Promise<CrashResult[]> {
-  const res = await fetch(`/api/premium/crash-aggregate?days=${days}&maxPages=${maxPages}`)
-  if (!res.ok) { const d = await res.json(); throw new Error(d?.error ?? `Erro ${res.status}`) }
-  const d = await res.json()
-  return d.records ?? []
-}
-
 // Busca só o dia BR exato — necessário pro corretor de lista do Double,
 // já que pedir "vários dias de uma vez" nunca cabe no limite de páginas
 // (~2800 rounds/dia) e devolvia histórico vazio pra qualquer data que não
 // fosse hoje.
-async function fetchDoubleAggregateByDate(date: string, maxPages = 50): Promise<DoubleResult[]> {
+async function fetchDoubleAggregateByDate(date: string, maxPages = 30): Promise<DoubleResult[]> {
   const res = await fetch(`/api/premium/double-aggregate?date=${date}&maxPages=${maxPages}`)
-  if (!res.ok) { const d = await res.json(); throw new Error(d?.error ?? `Erro ${res.status}`) }
-  const d = await res.json()
-  return d.records ?? []
-}
-
-// Busca só o dia BR exato — necessário pra corretor de lista, já que pedir
-// "vários dias de uma vez" nunca cabe no limite de páginas (Crash tem
-// milhares de rounds por dia) e devolvia histórico vazio pra qualquer data
-// que não fosse hoje.
-async function fetchCrashAggregateByDate(date: string, maxPages = 50): Promise<CrashResult[]> {
-  const res = await fetch(`/api/premium/crash-aggregate?date=${date}&maxPages=${maxPages}`)
   if (!res.ok) { const d = await res.json(); throw new Error(d?.error ?? `Erro ${res.status}`) }
   const d = await res.json()
   return d.records ?? []
@@ -227,7 +211,7 @@ function HistoricoTab() {
     setError(null)
     try {
       const end   = new Date()
-      const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000)
+      const start = new Date(end.getTime() - 24 * 60 * 60 * 1000)
       const res = await fetch(
         `/api/premium/history?start=${encodeURIComponent(start.toISOString())}&end=${encodeURIComponent(end.toISOString())}&page=${p}`
       )
@@ -356,8 +340,8 @@ function GeradorListaTab() {
       let totalResults = 0
 
       if (m === "branco") {
-        // 7 dias de histórico para o branco — mais dados, padrões mais confiáveis
-        const results7 = await fetchDoubleAggregate(7, 30)
+        // 24h de histórico para o branco
+        const results7 = await fetchDoubleAggregate(1, 30)
         totalResults = results7.length
 
         const groups7: Record<string, { branco: number; total: number }> = {}
@@ -505,7 +489,7 @@ function GeradorListaTab() {
       {loading && (
         <div className="flex items-center justify-center gap-3 h-24 text-gray-400 text-sm">
           <div className="w-5 h-5 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
-          Buscando histórico...
+          Aguarde um instante até a geração terminar...
         </div>
       )}
 
@@ -559,6 +543,33 @@ function GeradorListaTab() {
   )
 }
 
+// ─── Modo "Número" — mesma técnica de curingas usada no SOMA do Bac Bo:
+//     token exato (roll) + token curinga (só a cor) por rodada, cartesiano
+//     na janela. Sem isso, sequências de número exato são raras demais pra
+//     bater "Mín. de ocorrências" (15 valores possíveis por posição vs 3 na cor).
+function numTokenOptions(r: DoubleResult): string[] {
+  const exact = String(r.roll)
+  const wild = COLOR_NAME[r.color]
+  return exact === wild ? [exact, "X"] : [exact, wild, "X"]
+}
+
+function cartesianTokens(opts: string[][]): string[][] {
+  return opts.reduce<string[][]>(
+    (acc, list) => {
+      const next: string[][] = []
+      for (const a of acc) for (const b of list) next.push([...a, b])
+      return next
+    },
+    [[]]
+  )
+}
+
+// Quantas posições da sequência são número exato (não cor-curinga) — usado
+// pra preferir padrões mais específicos quando existirem alternativas.
+function numSpecificity(seq: string): number {
+  return seq.split(",").filter(t => /^\d+$/.test(t)).length
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 //  ABA 3 — BUSCAR PADRÃO
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -566,12 +577,13 @@ function BuscarPadraoTab() {
   const [gales,    setGales]    = useState(1)
   const [minOcc,   setMinOcc]   = useState(10)
   const [seqLen,   setSeqLen]   = useState(3)
-  const [mode,     setMode]     = useState<"normal" | "branco">("normal")
+  const [mode,     setMode]     = useState<"normal" | "branco" | "numero">("normal")
   const [loading,  setLoading]  = useState(false)
   const [patterns, setPatterns] = useState<PatternResult[]>(() => {
     try { const s = localStorage.getItem("premium_padrao_patterns"); return s ? JSON.parse(s) : [] } catch { return [] }
   })
   const [saving,   setSaving]   = useState<string | null>(null)
+  const [error,    setError]    = useState("")
   const [saved,    setSaved]    = useState<Set<string>>(() => {
     try { const s = localStorage.getItem("premium_double_active_patterns"); return s ? new Set((JSON.parse(s) as PatternResult[]).map(p => `${p.sequence}→${p.betColor}`)) : new Set() } catch { return new Set() }
   })
@@ -583,7 +595,7 @@ function BuscarPadraoTab() {
     await fetch("/api/user/estrategias", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sequence: p.sequence, color: p.betColor, gameType: "DOUBLE", strategyType: "SEQUÊNCIA" }),
+      body: JSON.stringify({ sequence: p.sequence, color: p.betColor, gameType: "DOUBLE", strategyType: p.sequence.split(",").some(t => /^\d+$/.test(t)) ? "NÚMEROS" : "SEQUÊNCIA" }),
     })
     setSaving(null)
     setSaved(prev => new Set([...prev, key]))
@@ -596,64 +608,110 @@ function BuscarPadraoTab() {
     } catch {}
   }
 
-  async function analyze(m: "normal" | "branco") {
+  async function analyze(m: "normal" | "branco" | "numero") {
     setMode(m)
     setLoading(true)
     setPatterns([])
+    setError("")
 
-    const results = await fetchDoubleAggregate(7, 30)
-    const sorted = [...results].sort((a, b) =>
-      new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-    )
+    try {
+      const results = await fetchDoubleAggregate(1, 30)
+      if (!results.length) {
+        setError("Nenhum resultado encontrado no histórico das últimas 24h. Tente novamente em instantes.")
+        return
+      }
+      const sorted = [...results].sort((a, b) =>
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      )
 
-    const stats: Record<string, PatternResult> = {}
-    const colorsToSearch = m === "branco" ? [0] : [1, 2]
-    const effectiveGales  = m === "branco" ? Math.max(gales, 10)  : gales
-    const effectiveSeqLen = m === "branco" ? Math.max(seqLen, 5) : seqLen
+      const stats: Record<string, PatternResult> = {}
+      const colorsToSearch = m === "branco" ? [0] : [1, 2]
+      const effectiveGales  = m === "branco" ? Math.max(gales, 10)  : gales
+      const effectiveSeqLen = m === "branco" ? Math.max(seqLen, 5) : seqLen
 
-    for (let i = effectiveSeqLen; i < sorted.length - effectiveGales; i++) {
-      const seqColors = sorted.slice(i - effectiveSeqLen, i).map(r => COLOR_NAME[r.color])
-      const seqKey    = seqColors.join(",")
+      for (let i = effectiveSeqLen; i < sorted.length - effectiveGales; i++) {
+        const window = sorted.slice(i - effectiveSeqLen, i)
+        // Número: gera exato (roll) + curinga (cor) por rodada, cartesiano na
+        // janela — senão sequência de número exato é rara demais pra achar padrão.
+        const seqVariants = m === "numero"
+          ? cartesianTokens(window.map(numTokenOptions))
+          : [window.map(r => COLOR_NAME[r.color])]
 
-      for (const betColorNum of colorsToSearch) {
-        const betColor = COLOR_NAME[betColorNum]
-        const key = `${seqKey}→${betColor}`
+        for (const seqTokens of seqVariants) {
+          const seqKey = seqTokens.join(",")
 
-        if (!stats[key]) stats[key] = {
-          sequence: seqKey,
-          betColor,
-          betColorNum,
-          occurrences: 0,
-          wins: 0,
-          galeWins: new Array(effectiveGales).fill(0),
-          hitRate: 0,
-        }
-        stats[key].occurrences++
+          for (const betColorNum of colorsToSearch) {
+            const betColor = COLOR_NAME[betColorNum]
+            const key = `${seqKey}→${betColor}`
 
-        const nextColor = COLOR_NAME[sorted[i].color]
-        if (nextColor === betColor) {
-          stats[key].wins++
-        } else {
-          for (let g = 1; g <= effectiveGales; g++) {
-            if (i + g < sorted.length && COLOR_NAME[sorted[i + g].color] === betColor) {
-              stats[key].galeWins[g - 1]++
-              break
+            if (!stats[key]) stats[key] = {
+              sequence: seqKey,
+              betColor,
+              betColorNum,
+              occurrences: 0,
+              wins: 0,
+              galeWins: new Array(effectiveGales).fill(0),
+              hitRate: 0,
+            }
+            stats[key].occurrences++
+
+            const nextColor = COLOR_NAME[sorted[i].color]
+            if (nextColor === betColor) {
+              stats[key].wins++
+            } else {
+              for (let g = 1; g <= effectiveGales; g++) {
+                if (i + g < sorted.length && COLOR_NAME[sorted[i + g].color] === betColor) {
+                  stats[key].galeWins[g - 1]++
+                  break
+                }
+              }
             }
           }
         }
       }
+
+      const totalWins = (p: PatternResult) => p.wins + p.galeWins.reduce((a, b) => a + b, 0)
+      let usedMinOcc = minOcc
+      let list = Object.values(stats)
+        .filter(p => p.occurrences >= minOcc)
+        .map(p => ({ ...p, hitRate: totalWins(p) / p.occurrences }))
+        .sort((a, b) => b.hitRate - a.hitRate)
+
+      // Número: se nada bateu o mínimo configurado, tenta com mínimo menor
+      // (mesmo fallback do SOMA do Bac Bo) antes de desistir.
+      if (m === "numero" && list.length === 0) {
+        for (const soft of [3, 2]) {
+          if (soft >= minOcc) continue
+          const relaxed = Object.values(stats)
+            .filter(p => p.occurrences >= soft)
+            .map(p => ({ ...p, hitRate: totalWins(p) / p.occurrences }))
+            .sort((a, b) => b.hitRate - a.hitRate)
+          if (relaxed.length > 0) {
+            list = relaxed
+            usedMinOcc = soft
+            setError(`Nenhum padrão com ≥${minOcc} ocorrências — mostrando com ≥${soft}.`)
+            break
+          }
+        }
+      }
+
+      // Número: prefere sequências mais específicas (com número exato) quando
+      // existirem, em vez de só cor-curinga em tudo.
+      if (m === "numero" && list.length > 0) {
+        const hasSpecific = list.some(p => numSpecificity(p.sequence) > 0)
+        if (hasSpecific) {
+          list = list.filter(p => numSpecificity(p.sequence) > 0)
+        }
+      }
+
+      const top = list.slice(0, 5)
+      setPatterns(top)
+      try { localStorage.setItem("premium_padrao_patterns", JSON.stringify(top)) } catch {}
+    } catch (e: any) {
+      setError(e?.message ?? "Erro ao buscar padrões. Tente novamente.")
+    } finally {
+      setLoading(false)
     }
-
-    const totalWins = (p: PatternResult) => p.wins + p.galeWins.reduce((a, b) => a + b, 0)
-    const top = Object.values(stats)
-      .filter(p => p.occurrences >= minOcc)
-      .map(p => ({ ...p, hitRate: totalWins(p) / p.occurrences }))
-      .sort((a, b) => b.hitRate - a.hitRate)
-      .slice(0, 5)
-
-    setPatterns(top)
-    try { localStorage.setItem("premium_padrao_patterns", JSON.stringify(top)) } catch {}
-    setLoading(false)
   }
 
   const hitBg = (rate: number) =>
@@ -687,6 +745,10 @@ function BuscarPadraoTab() {
             className="flex-1 bg-green-500 hover:bg-green-400 disabled:opacity-50 text-black font-bold py-3 rounded-xl text-sm transition-colors">
             {loading && mode === "normal" ? "Analisando..." : "🎯 Buscar Padrões"}
           </button>
+          <button onClick={() => analyze("numero")} disabled={loading}
+            className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-3 rounded-xl text-sm transition-colors border border-blue-500">
+            {loading && mode === "numero" ? "Analisando..." : "🔢 Buscar Número"}
+          </button>
           <button onClick={() => analyze("branco")} disabled={loading}
             className="flex-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white font-bold py-3 rounded-xl text-sm transition-colors border border-gray-600">
             {loading && mode === "branco" ? "Analisando..." : "⚪ Buscar Branco"}
@@ -697,7 +759,13 @@ function BuscarPadraoTab() {
       {loading && (
         <div className="flex items-center justify-center gap-3 h-24 text-gray-400 text-sm">
           <div className="w-5 h-5 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
-          Catalogando sequências...
+          Aguarde um instante até a busca terminar...
+        </div>
+      )}
+
+      {!loading && error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-red-400 text-sm">
+          {error}
         </div>
       )}
 
@@ -722,15 +790,37 @@ function BuscarPadraoTab() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1 flex-wrap mb-2">
                       {isSaved && <span className="text-base mr-1">👑</span>}
-                      {p.sequence.split(",").map((c, j) => (
-                        <span key={j} className={`text-xs font-bold px-2 py-0.5 rounded ${
-                          c === "VERMELHO" ? "bg-red-600/30 text-red-300" :
-                          c === "PRETO"    ? "bg-gray-700 text-gray-300" :
-                                            "bg-white/10 text-gray-200"
-                        }`}>
-                          {COLOR_EMOJI[c === "VERMELHO" ? 1 : c === "PRETO" ? 2 : 0]} {c}
-                        </span>
-                      ))}
+                      {p.sequence.split(",").map((c, j) => {
+                        const n = /^\d+$/.test(c) ? parseInt(c, 10) : null
+                        if (n !== null) {
+                          const nColorNum = n === 0 ? 0 : n <= 7 ? 1 : 2
+                          return (
+                            <span key={j} className={`text-xs font-bold px-2 py-0.5 rounded ${
+                              nColorNum === 1 ? "bg-red-600/30 text-red-300" :
+                              nColorNum === 2 ? "bg-gray-700 text-gray-300" :
+                                                "bg-white/10 text-gray-200"
+                            }`}>
+                              {COLOR_EMOJI[nColorNum]} {n}
+                            </span>
+                          )
+                        }
+                        if (c === "X") {
+                          return (
+                            <span key={j} className="text-xs font-bold px-2 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">
+                              ✳️ X
+                            </span>
+                          )
+                        }
+                        return (
+                          <span key={j} className={`text-xs font-bold px-2 py-0.5 rounded ${
+                            c === "VERMELHO" ? "bg-red-600/30 text-red-300" :
+                            c === "PRETO"    ? "bg-gray-700 text-gray-300" :
+                                              "bg-white/10 text-gray-200"
+                          }`}>
+                            {COLOR_EMOJI[c === "VERMELHO" ? 1 : c === "PRETO" ? 2 : 0]} {c}
+                          </span>
+                        )
+                      })}
                       <span className="text-gray-600 text-xs">→</span>
                       <span className={`text-xs font-bold px-2 py-0.5 rounded ${
                         p.betColorNum === 1 ? "bg-red-600/40 text-red-300" :
@@ -797,6 +887,7 @@ function ValidarListaTab() {
   const [loading,    setLoading]    = useState(false)
   const [results,    setResults]    = useState<ValidationEntry[]>([])
   const [copied,     setCopied]     = useState(false)
+  const [error,      setError]      = useState<string | null>(null)
 
   async function validate() {
     const entries = listText
@@ -808,63 +899,69 @@ function ValidarListaTab() {
 
     setLoading(true)
     setResults([])
+    setError(null)
 
-    // Busca histórico cobrindo a data escolhida (não sempre "hoje") — uma
-    // lista colada depois da meia-noite é de ontem, não de hoje.
-    const isToday = validateDate === brTodayStr()
-    const history = await fetchDoubleAggregateByDate(validateDate, 50)
-    // Ordena cronologicamente — Double joga a cada ~3 min, não a cada minuto
-    const targetRounds = history
-      .filter(r => toBRDate(r.created_at) === validateDate)
-      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    try {
+      // Busca histórico cobrindo a data escolhida (não sempre "hoje") — uma
+      // lista colada depois da meia-noite é de ontem, não de hoje.
+      const isToday = validateDate === brTodayStr()
+      const history = await fetchDoubleAggregateByDate(validateDate, 30)
+      // Ordena cronologicamente — Double joga a cada ~3 min, não a cada minuto
+      const targetRounds = history
+        .filter(r => toBRDate(r.created_at) === validateDate)
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
 
-    const validated: ValidationEntry[] = entries.map(({ hhmm, color }) => {
-      // Encontra o primeiro round no horário do sinal ou após ele
-      const startIdx = targetRounds.findIndex(r => toBR(r.created_at).hhmm >= hhmm)
+      const validated: ValidationEntry[] = entries.map(({ hhmm, color }) => {
+        // Encontra o primeiro round no horário do sinal ou após ele
+        const startIdx = targetRounds.findIndex(r => toBR(r.created_at).hhmm >= hhmm)
 
-      if (startIdx === -1) {
-        if (!isToday) return { time: hhmm, color, result: "LOSS" }
-        const { h: brH, m: brM } = brNowHM()
-        const nowHHMM = `${String(brH).padStart(2,"0")}:${String(brM).padStart(2,"0")}`
-        return { time: hhmm, color, result: hhmm > nowHHMM ? "PENDENTE" : "LOSS" }
-      }
+        if (startIdx === -1) {
+          if (!isToday) return { time: hhmm, color, result: "LOSS" }
+          const { h: brH, m: brM } = brNowHM()
+          const nowHHMM = `${String(brH).padStart(2,"0")}:${String(brM).padStart(2,"0")}`
+          return { time: hhmm, color, result: hhmm > nowHHMM ? "PENDENTE" : "LOSS" }
+        }
 
-      // Checa o round de entrada + rounds seguintes reais (não minutos consecutivos)
-      for (let g = 0; g <= gales; g++) {
-        const idx = startIdx + g
-        if (idx >= targetRounds.length) break
-        const round = targetRounds[idx]
-        if (round.color === color) {
-          return {
-            time: hhmm, color,
-            result: (g === 0 ? "WIN" : `GALE${g}`) as ValidationEntry["result"],
-            actualColor: round.color,
+        // Checa o round de entrada + rounds seguintes reais (não minutos consecutivos)
+        for (let g = 0; g <= gales; g++) {
+          const idx = startIdx + g
+          if (idx >= targetRounds.length) break
+          const round = targetRounds[idx]
+          if (round.color === color) {
+            return {
+              time: hhmm, color,
+              result: (g === 0 ? "WIN" : `GALE${g}`) as ValidationEntry["result"],
+              actualColor: round.color,
+            }
+          }
+          // Proteção no branco
+          if (protection && round.color === 0) {
+            return { time: hhmm, color, result: "PROTEGIDO", actualColor: 0 }
           }
         }
-        // Proteção no branco
-        if (protection && round.color === 0) {
-          return { time: hhmm, color, result: "PROTEGIDO", actualColor: 0 }
+
+        // Gales esgotados sem bater — mostra informativamente onde essa cor
+        // bateria depois (não conta como vitória, é só contexto pro cliente)
+        const nextHitInfo = findNextHit(targetRounds, startIdx + gales + 1, color)
+
+        // Data passada: nada fica pendente, o dia já acabou
+        if (!isToday) return { time: hhmm, color, result: "LOSS", nextHitInfo }
+
+        // Pendente (horário ainda não ocorreu hoje)
+        const { h: brH, m: brM } = brNowHM()
+        const nowHHMM = `${String(brH).padStart(2,"0")}:${String(brM).padStart(2,"0")}`
+        if (hhmm > nowHHMM) {
+          return { time: hhmm, color, result: "PENDENTE" }
         }
-      }
+        return { time: hhmm, color, result: "LOSS", nextHitInfo }
+      })
 
-      // Gales esgotados sem bater — mostra informativamente onde essa cor
-      // bateria depois (não conta como vitória, é só contexto pro cliente)
-      const nextHitInfo = findNextHit(targetRounds, startIdx + gales + 1, color)
-
-      // Data passada: nada fica pendente, o dia já acabou
-      if (!isToday) return { time: hhmm, color, result: "LOSS", nextHitInfo }
-
-      // Pendente (horário ainda não ocorreu hoje)
-      const { h: brH, m: brM } = brNowHM()
-      const nowHHMM = `${String(brH).padStart(2,"0")}:${String(brM).padStart(2,"0")}`
-      if (hhmm > nowHHMM) {
-        return { time: hhmm, color, result: "PENDENTE" }
-      }
-      return { time: hhmm, color, result: "LOSS", nextHitInfo }
-    })
-
-    setResults(validated)
-    setLoading(false)
+      setResults(validated)
+    } catch (e: any) {
+      setError(e?.message ?? "Erro ao corrigir a lista. Tente novamente.")
+    } finally {
+      setLoading(false)
+    }
   }
 
   function copyResultsList() {
@@ -1058,9 +1155,16 @@ function ValidarListaTab() {
         <div className="flex items-center gap-3">
           <div className="flex-1">
             <p className="text-xs text-gray-500 mb-1.5 font-medium">Data da lista</p>
-            <input type="date" value={validateDate} max={brTodayStr()}
-              onChange={(e) => setValidateDate(e.target.value || brTodayStr())}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setValidateDate(brTodayStr())}
+                className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${validateDate === brTodayStr() ? "bg-green-500 text-black" : "bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700"}`}>
+                Hoje
+              </button>
+              <button type="button" onClick={() => setValidateDate(brYesterdayStr())}
+                className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${validateDate === brYesterdayStr() ? "bg-green-500 text-black" : "bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700"}`}>
+                Ontem
+              </button>
+            </div>
           </div>
           <div className="flex-1">
             <p className="text-xs text-gray-500 mb-1.5 font-medium">Gales a validar</p>
@@ -1073,6 +1177,17 @@ function ValidarListaTab() {
           className="w-full bg-green-500 hover:bg-green-400 disabled:opacity-50 text-black font-bold py-2.5 rounded-xl text-sm transition-colors">
           {loading ? "Corrigindo..." : "Corrigir Lista"}
         </button>
+        {loading && (
+          <div className="flex items-center justify-center gap-3 h-16 text-gray-400 text-sm">
+            <div className="w-5 h-5 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
+            Aguarde um instante até a correção terminar...
+          </div>
+        )}
+        {!loading && error && (
+          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-red-400 text-sm">
+            ⚠️ {error}
+          </div>
+        )}
         <label className="flex items-center gap-2 cursor-pointer select-none w-fit">
           <div
             onClick={() => setProtection(p => !p)}
@@ -1231,7 +1346,7 @@ function FortuneHistoricoTab() {
     setError(null)
     try {
       const end   = new Date()
-      const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000)
+      const start = new Date(end.getTime() - 24 * 60 * 60 * 1000)
       const res = await fetch(
         `/api/premium/fortune-history?start=${encodeURIComponent(start.toISOString())}&end=${encodeURIComponent(end.toISOString())}&page=${p}`
       )
@@ -1324,6 +1439,7 @@ function FortuneBuscarPadraoTab() {
   const [gales,    setGales]    = useState(1)
   const [minOcc,   setMinOcc]   = useState(10)
   const [seqLen,   setSeqLen]   = useState(3)
+  const [mode,     setMode]     = useState<"normal" | "amarelo">("normal")
   const [loading,  setLoading]  = useState(false)
   const [patterns, setPatterns] = useState<PatternResult[]>(() => {
     try { const s = localStorage.getItem("premium_fortune_padrao_patterns"); return s ? JSON.parse(s) : [] } catch { return [] }
@@ -1353,25 +1469,29 @@ function FortuneBuscarPadraoTab() {
     } catch {}
   }
 
-  async function analyze() {
+  async function analyze(m: "normal" | "amarelo") {
+    setMode(m)
     setLoading(true)
     setPatterns([])
     try {
       // mesma cache-key do Gerador (7 dias) — se um rodou, o outro aproveita o cache
-      const results = await fetchFortuneAggregate(7, 30)
+      const results = await fetchFortuneAggregate(1, 60)
       const sorted = [...results].sort((a, b) =>
         new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       )
 
       const F_COLOR: Record<number, string> = { 0: "AMARELO", 1: "VERMELHO", 2: "AZUL" }
       const stats: Record<string, PatternResult> = {}
+      const betColorsToSearch = m === "amarelo" ? [0] : [1, 2]
+      const effectiveGales  = m === "amarelo" ? Math.max(gales, 10)  : gales
+      const effectiveSeqLen = m === "amarelo" ? Math.max(seqLen, 5) : seqLen
 
-      for (let i = seqLen; i < sorted.length - gales; i++) {
-        const seqColors = sorted.slice(i - seqLen, i).map(r => F_COLOR[r.color] ?? "AMARELO")
+      for (let i = effectiveSeqLen; i < sorted.length - effectiveGales; i++) {
+        const seqColors = sorted.slice(i - effectiveSeqLen, i).map(r => F_COLOR[r.color] ?? "AMARELO")
         const seqKey    = seqColors.join(",")
 
-        for (const betColorNum of [1, 2] as const) {
-          const betColor = betColorNum === 1 ? "VERMELHO" : "AZUL"
+        for (const betColorNum of betColorsToSearch) {
+          const betColor = betColorNum === 0 ? "AMARELO" : betColorNum === 1 ? "VERMELHO" : "AZUL"
           const key = `${seqKey}→${betColor}`
 
           if (!stats[key]) stats[key] = {
@@ -1380,7 +1500,7 @@ function FortuneBuscarPadraoTab() {
             betColorNum,
             occurrences: 0,
             wins: 0,
-            galeWins: new Array(gales).fill(0),
+            galeWins: new Array(effectiveGales).fill(0),
             hitRate: 0,
           }
           stats[key].occurrences++
@@ -1388,12 +1508,12 @@ function FortuneBuscarPadraoTab() {
           const nextColor = F_COLOR[sorted[i].color] ?? "AMARELO"
           if (nextColor === betColor) {
             stats[key].wins++
-          } else if (nextColor !== "AMARELO") {
-            for (let g = 1; g <= gales; g++) {
+          } else if (m === "amarelo" || nextColor !== "AMARELO") {
+            for (let g = 1; g <= effectiveGales; g++) {
               if (i + g >= sorted.length) break
               const gc = F_COLOR[sorted[i + g].color] ?? "AMARELO"
               if (gc === betColor) { stats[key].galeWins[g - 1]++; break }
-              if (gc !== "AMARELO") break
+              if (m !== "amarelo" && gc !== "AMARELO") break
             }
           }
         }
@@ -1442,16 +1562,30 @@ function FortuneBuscarPadraoTab() {
               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-yellow-500/50" />
           </div>
         </div>
-        <button onClick={analyze} disabled={loading}
-          className="w-full bg-yellow-400 hover:bg-yellow-300 disabled:opacity-50 text-black font-bold py-3 rounded-xl text-sm transition-colors">
-          {loading ? "Analisando..." : "Buscar Padrões"}
-        </button>
+        <div className="flex gap-3">
+          <button onClick={() => analyze("normal")} disabled={loading}
+            className="flex-1 bg-yellow-400 hover:bg-yellow-300 disabled:opacity-50 text-black font-bold py-3 rounded-xl text-sm transition-colors">
+            {loading && mode === "normal" ? "Analisando..." : "🎯 Buscar Padrões"}
+          </button>
+          <button onClick={() => analyze("amarelo")} disabled={loading}
+            className="flex-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white font-bold py-3 rounded-xl text-sm transition-colors border border-gray-600">
+            {loading && mode === "amarelo" ? "Analisando..." : "💛 Buscar Amarelo"}
+          </button>
+        </div>
       </div>
 
       {loading && (
         <div className="flex items-center justify-center gap-3 h-24 text-gray-400 text-sm">
           <div className="w-5 h-5 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin" />
-          Catalogando sequências...
+          Aguarde um instante até a busca terminar...
+        </div>
+      )}
+
+      {!loading && mode === "amarelo" && patterns.length > 0 && (
+        <div className="bg-yellow-500/10 border border-yellow-500/40 rounded-xl p-4 space-y-2">
+          <p className="text-sm font-bold text-white">💛 Atenção: Entrada no Amarelo</p>
+          <p className="text-xs text-gray-300 leading-relaxed">O Amarelo é um resultado de baixa frequência, por isso é essencial configurar o robô com no mínimo 10 gales mão fixa para aumentar as chances de capturar a entrada quando ela ocorrer.</p>
+          <p className="text-xs font-semibold text-yellow-400">⚠️ Recomendação: utilize sempre 10 gales mão fixa ao operar estratégias focadas no Amarelo.</p>
         </div>
       )}
 
@@ -1479,7 +1613,9 @@ function FortuneBuscarPadraoTab() {
                       ))}
                       <span className="text-gray-600 text-xs">→</span>
                       <span className={`text-xs font-bold px-2 py-0.5 rounded ${
-                        p.betColorNum === 1 ? "bg-red-600/40 text-red-300" : "bg-blue-600/40 text-blue-300"
+                        p.betColorNum === 1 ? "bg-red-600/40 text-red-300" :
+                        p.betColorNum === 2 ? "bg-blue-600/40 text-blue-300" :
+                                               "bg-yellow-500/30 text-yellow-300"
                       }`}>
                         {F_EMOJI[p.betColor] ?? "?"} {p.betColor}
                       </span>
@@ -1538,7 +1674,7 @@ function FortuneGeradorListaTab() {
     setError(null)
     try {
       // 7 dias de dados para ter amostras suficientes por minuto
-      const results = await fetchFortuneAggregate(7, 30)
+      const results = await fetchFortuneAggregate(1, 60)
 
       // Agrupa por HH:MM igual ao Double
       const groups: Record<string, { 0: number; 1: number; 2: number; total: number }> = {}
@@ -1617,6 +1753,12 @@ function FortuneGeradorListaTab() {
           className="w-full bg-green-500 hover:bg-green-400 disabled:opacity-50 text-black font-bold py-2.5 rounded-xl text-sm transition-colors">
           {loading ? "Gerando..." : "Gerar Lista"}
         </button>
+        {loading && (
+          <div className="flex items-center justify-center gap-3 h-16 text-gray-400 text-sm">
+            <div className="w-5 h-5 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
+            Aguarde um instante até a geração terminar...
+          </div>
+        )}
       </div>
 
       {error && (
@@ -1671,6 +1813,7 @@ function FortuneValidarListaTab() {
   const [loading,    setLoading]    = useState(false)
   const [results,    setResults]    = useState<ValidationEntry[]>([])
   const [copied,     setCopied]     = useState(false)
+  const [error,      setError]      = useState<string | null>(null)
 
   async function validate() {
     const entries = listText
@@ -1682,19 +1825,21 @@ function FortuneValidarListaTab() {
 
     setLoading(true)
     setResults([])
+    setError(null)
 
-    // Busca histórico cobrindo a data escolhida (não sempre "hoje") — uma
-    // lista colada depois da meia-noite é de ontem, não de hoje.
-    const isToday = validateDate === brTodayStr()
-    const now   = new Date()
-    const start = isToday ? new Date(now.getTime() - 24 * 60 * 60 * 1000) : new Date(`${validateDate}T00:00:00-03:00`)
-    const end   = isToday ? now : new Date(`${validateDate}T23:59:59-03:00`)
-    const history = await fetchFortunePages(start.toISOString(), end.toISOString(), 5, 200)
-    const targetRounds = history
-      .filter(r => toBRDate(r.created_at) === validateDate)
-      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    try {
+      // Busca histórico cobrindo a data escolhida (não sempre "hoje") — uma
+      // lista colada depois da meia-noite é de ontem, não de hoje.
+      const isToday = validateDate === brTodayStr()
+      const now   = new Date()
+      const start = isToday ? new Date(now.getTime() - 24 * 60 * 60 * 1000) : new Date(`${validateDate}T00:00:00-03:00`)
+      const end   = isToday ? now : new Date(`${validateDate}T23:59:59-03:00`)
+      const history = await fetchFortunePages(start.toISOString(), end.toISOString(), 60, 200)
+      const targetRounds = history
+        .filter(r => toBRDate(r.created_at) === validateDate)
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
 
-    const validated: ValidationEntry[] = entries.map(({ hhmm, color }) => {
+      const validated: ValidationEntry[] = entries.map(({ hhmm, color }) => {
       const startIdx = targetRounds.findIndex(r => toBR(r.created_at).hhmm >= hhmm)
 
       if (startIdx === -1) {
@@ -1735,8 +1880,12 @@ function FortuneValidarListaTab() {
       return { time: hhmm, color, result: "LOSS", nextHitInfo }
     })
 
-    setResults(validated)
-    setLoading(false)
+      setResults(validated)
+    } catch (e: any) {
+      setError(e?.message ?? "Erro ao corrigir a lista. Tente novamente.")
+    } finally {
+      setLoading(false)
+    }
   }
 
   function copyResultsList() {
@@ -1920,9 +2069,16 @@ function FortuneValidarListaTab() {
         <div className="flex items-center gap-3">
           <div className="flex-1">
             <p className="text-xs text-gray-500 mb-1.5 font-medium">Data da lista</p>
-            <input type="date" value={validateDate} max={brTodayStr()}
-              onChange={(e) => setValidateDate(e.target.value || brTodayStr())}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setValidateDate(brTodayStr())}
+                className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${validateDate === brTodayStr() ? "bg-green-500 text-black" : "bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700"}`}>
+                Hoje
+              </button>
+              <button type="button" onClick={() => setValidateDate(brYesterdayStr())}
+                className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${validateDate === brYesterdayStr() ? "bg-green-500 text-black" : "bg-gray-800 border border-gray-700 text-gray-300 hover:bg-gray-700"}`}>
+                Ontem
+              </button>
+            </div>
           </div>
           <div className="flex-1">
             <p className="text-xs text-gray-500 mb-1.5 font-medium">Gales a validar</p>
@@ -1935,6 +2091,17 @@ function FortuneValidarListaTab() {
           className="w-full bg-green-500 hover:bg-green-400 disabled:opacity-50 text-black font-bold py-2.5 rounded-xl text-sm transition-colors">
           {loading ? "Corrigindo..." : "Corrigir Lista"}
         </button>
+        {loading && (
+          <div className="flex items-center justify-center gap-3 h-16 text-gray-400 text-sm">
+            <div className="w-5 h-5 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
+            Aguarde um instante até a correção terminar...
+          </div>
+        )}
+        {!loading && error && (
+          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-red-400 text-sm">
+            ⚠️ {error}
+          </div>
+        )}
         <label className="flex items-center gap-2 cursor-pointer select-none w-fit">
           <div
             onClick={() => setProtection(p => !p)}
@@ -2014,677 +2181,6 @@ function FortuneValidarListaTab() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  CRASH — helpers e tipos
-// ═══════════════════════════════════════════════════════════════════════════════
-interface CrashResult {
-  id: string
-  crash_point: string
-  created_at: string
-  is_bonus_round: boolean
-}
-
-async function fetchCrashPages(start: string, end: string, maxPages = 10, pageDelay = 300): Promise<CrashResult[]> {
-  const all: CrashResult[] = []
-  let page = 1
-  while (page <= maxPages) {
-    const res = await fetch(`/api/premium/crash-history?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&page=${page}`)
-    if (!res.ok) {
-      if (res.status === 429) throw new Error("429")
-      break
-    }
-    const data = await res.json()
-    const records: CrashResult[] = extractRecords(data)
-    all.push(...records)
-    const lastPage = extractLastPage(data)
-    if (page >= lastPage || page >= maxPages) break
-    page++
-    if (page <= maxPages) await sleep(pageDelay)
-  }
-  return all
-}
-
-function crashBg(cp: number): string {
-  if (cp >= 10) return "#1e3a5f"
-  if (cp >= 5)  return "#14532d"
-  if (cp >= 2)  return "#713f12"
-  if (cp >= 1.5) return "#7f1d1d"
-  return "#450a0a"
-}
-function crashText(cp: number): string {
-  if (cp >= 10) return "#93c5fd"
-  if (cp >= 5)  return "#4ade80"
-  if (cp >= 2)  return "#fbbf24"
-  if (cp >= 1.5) return "#fca5a5"
-  return "#ef4444"
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  CRASH ABA 1 — HISTÓRICO
-// ═══════════════════════════════════════════════════════════════════════════════
-function CrashHistoricoTab() {
-  const [page,     setPage]     = useState(1)
-  const [results,  setResults]  = useState<CrashResult[]>([])
-  const [lastPage, setLastPage] = useState(1)
-  const [loading,  setLoading]  = useState(false)
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null)
-
-  async function load(p: number) {
-    setLoading(true)
-    const { start, end } = isoRange(1)
-    try {
-      const res  = await fetch(`/api/premium/crash-history?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&page=${p}`)
-      const data = await res.json()
-      setResults(extractRecords(data))
-      setLastPage(extractLastPage(data))
-      const { h, m } = brNowHM()
-      setUpdatedAt(`${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`)
-    } catch {}
-    setLoading(false)
-  }
-
-  useEffect(() => { load(page) }, [page])
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        {updatedAt && <p className="text-xs text-gray-500 flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-green-400 inline-block" />Atualizado às {updatedAt}</p>}
-        <p className="text-xs text-gray-500 ml-auto">Página {page} de {lastPage}</p>
-      </div>
-
-      {loading ? (
-        <div className="flex items-center justify-center h-40 gap-3 text-gray-400 text-sm">
-          <div className="w-5 h-5 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
-          Carregando...
-        </div>
-      ) : (
-        <div className="grid grid-cols-7 gap-1.5">
-          {results.map((r) => {
-            const cp = parseFloat(r.crash_point)
-            const { hhmm } = toBR(r.created_at)
-            return (
-              <div key={r.id} className="rounded-lg flex flex-col items-center justify-center py-2 px-1 relative"
-                style={{ background: crashBg(cp), border: `1px solid ${crashText(cp)}30` }}>
-                {r.is_bonus_round && (
-                  <span className="absolute -top-1 -right-1 text-[9px] bg-purple-500 text-white rounded-full px-1">B</span>
-                )}
-                <span className="font-bold text-sm" style={{ color: crashText(cp) }}>
-                  {cp >= 10 ? cp.toFixed(1) : cp.toFixed(2)}x
-                </span>
-                <span className="text-[10px] text-gray-500 mt-0.5">{hhmm}</span>
-              </div>
-            )
-          })}
-        </div>
-      )}
-
-      {/* Paginação */}
-      <div className="flex items-center justify-center gap-2">
-        <button onClick={() => setPage(1)} disabled={page === 1 || loading} className="px-2 py-1 rounded bg-gray-800 text-gray-400 text-xs disabled:opacity-40">«</button>
-        <button onClick={() => setPage(p => Math.max(1, p-1))} disabled={page === 1 || loading} className="px-2 py-1 rounded bg-gray-800 text-gray-400 text-xs disabled:opacity-40">‹</button>
-        <span className="text-xs text-gray-400">{page} / {lastPage}</span>
-        <button onClick={() => setPage(p => Math.min(lastPage, p+1))} disabled={page === lastPage || loading} className="px-2 py-1 rounded bg-gray-800 text-gray-400 text-xs disabled:opacity-40">›</button>
-        <button onClick={() => setPage(lastPage)} disabled={page === lastPage || loading} className="px-2 py-1 rounded bg-gray-800 text-gray-400 text-xs disabled:opacity-40">»</button>
-      </div>
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  CRASH ABA 2 — GERADOR DE LISTA
-// ═══════════════════════════════════════════════════════════════════════════════
-interface CrashGeneratedEntry { time: string; hitRate: number; samples: number }
-
-function CrashGeradorListaTab() {
-  const [target,  setTarget]  = useState(2.0)
-  const [loading, setLoading] = useState(false)
-  const [list,    setList]    = useState<CrashGeneratedEntry[]>(() => {
-    try {
-      const s = localStorage.getItem("premium_crash_gerador_full")
-      return s ? JSON.parse(s) : []
-    } catch { return [] }
-  })
-  const [stats,   setStats]   = useState<{ results: number } | null>(() => {
-    try {
-      const s = localStorage.getItem("premium_crash_gerador_stats")
-      return s ? JSON.parse(s) : null
-    } catch { return null }
-  })
-  const [error,   setError]   = useState<string | null>(null)
-  const [copied,  setCopied]  = useState(false)
-
-  const toMin = (hhmm: string) => { const [h,m] = hhmm.split(":").map(Number); return h*60+m }
-  const fmtMult = (t: number) => String(parseFloat(t.toFixed(2)))
-
-  async function generate() {
-    setLoading(true); setList([]); setStats(null); setError(null)
-    try {
-      const results = await fetchCrashAggregate(7, 30)
-
-      const groups: Record<string, { hits: number; total: number }> = {}
-      for (const r of results) {
-        const { hhmm } = toBR(r.created_at)
-        if (!groups[hhmm]) groups[hhmm] = { hits: 0, total: 0 }
-        groups[hhmm].total++
-        if (parseFloat(r.crash_point) >= target) groups[hhmm].hits++
-      }
-
-      const { min: nowMin } = brNowHM()
-      const startMin = nowMin + 10
-      const toOrd = (hhmm: string) => { const m = toMin(hhmm); return m >= startMin ? m : m + 1440 }
-
-      const candidates = Object.entries(groups)
-        .filter(([, g]) => g.total >= 2 && g.hits / g.total >= 0.50)
-        .map(([time, g]) => ({ time, hitRate: g.hits / g.total, samples: g.total }))
-
-      const ordered = [
-        ...candidates.filter(e => toMin(e.time) >= startMin),
-        ...candidates.filter(e => toMin(e.time) < nowMin),
-      ].sort((a, b) => toOrd(a.time) - toOrd(b.time))
-
-      const chosen: CrashGeneratedEntry[] = []
-      const usedMins: number[] = []
-      for (const entry of ordered) {
-        if (chosen.length >= 20) break
-        const em = toMin(entry.time)
-        const tooClose = usedMins.some(u => { const d = Math.abs(u-em); return d < 3 || d > 1440-3 })
-        if (!tooClose) { chosen.push(entry); usedMins.push(em) }
-      }
-
-      setList(chosen)
-      setStats({ results: results.length })
-      try {
-        localStorage.setItem("premium_crash_gerador_full",  JSON.stringify(chosen))
-        localStorage.setItem("premium_crash_gerador_list",  JSON.stringify(chosen.map(e => e.time)))
-        localStorage.setItem("premium_crash_gerador_stats", JSON.stringify({ results: results.length }))
-        localStorage.setItem("premium_crash_gerador_target", String(target))
-        localStorage.setItem("premium_crash_gerador_ts",    String(Date.now()))
-      } catch {}
-    } catch (e: any) {
-      const msg: string = e?.message ?? "Erro"
-      setError(msg.includes("429") ? "Blaze bloqueando. Aguarde 1 minuto e tente novamente." : msg)
-    } finally { setLoading(false) }
-  }
-
-  function copyList() {
-    // Mantém a ordem de geração (cronológica a partir de agora+10 no momento da geração)
-    const text = list.map(e => `${e.time} ${fmtMult(target)}`).join("\n")
-    navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
-        <div className="flex items-center gap-3">
-          <div className="flex-1">
-            <label className="block text-xs text-gray-400 mb-1.5">Multiplicador alvo (mínimo)</label>
-            <NumberField min={1.01} max={100} step={0.1} value={target}
-              onChange={(n) => setTarget(n)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
-          </div>
-          <button onClick={generate} disabled={loading}
-            className="flex-1 mt-5 bg-green-500 hover:bg-green-400 disabled:opacity-50 text-black font-bold py-2.5 rounded-xl text-sm transition-colors">
-            {loading ? "Analisando..." : "Gerar Lista"}
-          </button>
-        </div>
-        {error && <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 text-red-400 text-xs">⚠️ {error}</div>}
-      </div>
-
-      {loading && (
-        <div className="flex items-center justify-center gap-3 h-24 text-gray-400 text-sm">
-          <div className="w-5 h-5 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
-          Analisando 7 dias de histórico...
-        </div>
-      )}
-
-      {!loading && list.length > 0 && (() => {
-        const { min: nowMin } = brNowHM()
-
-        return (
-          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
-              <div>
-                <p className="text-white font-semibold text-sm">{list.length} entradas encontradas</p>
-                {stats && <p className="text-xs text-gray-500">{stats.results} rodadas (7 dias) · alvo ≥ {fmtMult(target)}x · ≥50% acerto</p>}
-              </div>
-              <button onClick={copyList} className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
-                {copied ? "✅ Copiado!" : "📋 Copiar lista"}
-              </button>
-            </div>
-            <div className="p-4 space-y-1.5 max-h-96 overflow-y-auto">
-              {list.map((e, i) => {
-                const diff = (toMin(e.time) - nowMin + 1440) % 1440
-                const isPast = diff > 720
-                return (
-                  <div key={i} className={`flex items-center justify-between rounded-lg px-3 py-2 ${isPast ? "bg-gray-800/30 opacity-50" : "bg-gray-800/60"}`}>
-                    <div className="flex items-center gap-3">
-                      <span className="text-white font-mono font-bold text-sm">{e.time}</span>
-                      <span className="text-green-400 font-mono text-xs bg-green-900/30 px-2 py-0.5 rounded">{fmtMult(target)}x</span>
-                      {!isPast && <span className="text-gray-500 text-xs">em {diff} min</span>}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="h-1.5 w-20 bg-gray-700 rounded-full overflow-hidden">
-                        <div className="h-full rounded-full bg-green-500" style={{ width: `${e.hitRate * 100}%` }} />
-                      </div>
-                      <span className="text-xs text-gray-400 w-10 text-right">{(e.hitRate*100).toFixed(0)}%</span>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )
-      })()}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  CRASH ABA 3 — BUSCAR PADRÃO
-// ═══════════════════════════════════════════════════════════════════════════════
-interface CrashPatternResult {
-  label: string
-  occurrences: number
-  wins: number
-  galeWins: number[]
-  hitRate: number
-}
-
-type SavedCrashPattern = CrashPatternResult & { target: number; gales: number }
-
-function CrashBuscarPadraoTab() {
-  const [target,   setTarget]   = useState(2.0)
-  const [gales,    setGales]    = useState(1)
-  const [seqLen,   setSeqLen]   = useState(3)
-  const [minOcc,   setMinOcc]   = useState(10)
-  const [loading,  setLoading]  = useState(false)
-  const [patterns, setPatterns] = useState<CrashPatternResult[]>(() => {
-    try { const s = localStorage.getItem("premium_crash_patterns"); return s ? JSON.parse(s) : [] } catch { return [] }
-  })
-  const [saving,   setSaving]   = useState<string | null>(null)
-  const [saved,    setSaved]    = useState<Set<string>>(() => {
-    try {
-      const s = localStorage.getItem("premium_crash_active_patterns")
-      return s ? new Set((JSON.parse(s) as SavedCrashPattern[]).map(p => `${p.label}@${p.target}`)) : new Set()
-    } catch { return new Set() }
-  })
-
-  async function savePattern(p: CrashPatternResult) {
-    const key = `${p.label}@${target}`
-    if (saved.has(key) || saving) return
-    setSaving(key)
-    const seq = p.label.split(",").map(v => v === "H" ? "V" : "R").join(",")
-    await fetch("/api/user/estrategias", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sequence: seq, color: target.toFixed(2), gameType: "CRASH", strategyType: "SEQUÊNCIA" }),
-    })
-    setSaving(null)
-    setSaved(prev => new Set([...prev, key]))
-    // Track for crown display
-    try {
-      const raw = localStorage.getItem("premium_crash_active_patterns")
-      const prev: SavedCrashPattern[] = raw ? JSON.parse(raw) : []
-      if (!prev.some(s => `${s.label}@${s.target}` === key)) {
-        localStorage.setItem("premium_crash_active_patterns", JSON.stringify([...prev, { ...p, target, gales }]))
-      }
-    } catch {}
-  }
-
-  async function analyze() {
-    setLoading(true); setPatterns([])
-    try {
-      const results = await fetchCrashAggregate(7, 30)
-      const sorted = [...results].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-
-      const stats: Record<string, CrashPatternResult> = {}
-      for (let i = seqLen; i < sorted.length - gales; i++) {
-        const seq = sorted.slice(i - seqLen, i).map(r => parseFloat(r.crash_point) >= target ? "H" : "L")
-        const key = seq.join(",")
-        if (!stats[key]) stats[key] = { label: key, occurrences: 0, wins: 0, galeWins: new Array(gales).fill(0), hitRate: 0 }
-        stats[key].occurrences++
-
-        if (parseFloat(sorted[i].crash_point) >= target) {
-          stats[key].wins++
-        } else {
-          for (let g = 1; g <= gales; g++) {
-            if (i + g < sorted.length && parseFloat(sorted[i + g].crash_point) >= target) {
-              stats[key].galeWins[g - 1]++
-              break
-            }
-          }
-        }
-      }
-
-      const totalHits = (p: CrashPatternResult) => p.wins + p.galeWins.reduce((a, b) => a + b, 0)
-      const top = Object.values(stats)
-        .filter(p => p.occurrences >= minOcc)
-        .map(p => ({ ...p, hitRate: totalHits(p) / p.occurrences }))
-        .sort((a, b) => b.hitRate - a.hitRate)
-        .slice(0, 5)
-
-      setPatterns(top)
-      try { localStorage.setItem("premium_crash_patterns", JSON.stringify(top)) } catch {}
-    } catch {}
-    setLoading(false)
-  }
-
-  const pLabel = (p: CrashPatternResult, t = target) =>
-    p.label.split(",").map(v => v === "H" ? `≥${t}x` : `<${t}x`).join(", ") + ` → ≥${t}x`
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
-        <div className="grid grid-cols-4 gap-3">
-          <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Alvo (x)</label>
-            <NumberField min={1.01} step={0.1} value={target} onChange={(n) => setTarget(n)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Gales</label>
-            <NumberField min={0} max={3} value={gales} onChange={(n) => setGales(n)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Seq. anterior</label>
-            <NumberField min={1} max={6} value={seqLen} onChange={(n) => setSeqLen(n)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Mín. ocorrências</label>
-            <NumberField min={1} value={minOcc} onChange={(n) => setMinOcc(n)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
-          </div>
-        </div>
-        <button onClick={analyze} disabled={loading}
-          className="w-full bg-green-500 hover:bg-green-400 disabled:opacity-50 text-black font-bold py-2.5 rounded-xl text-sm transition-colors">
-          {loading ? "Analisando 7 dias..." : "Buscar Padrões"}
-        </button>
-      </div>
-
-      {loading && (
-        <div className="flex items-center justify-center gap-3 h-24 text-gray-400 text-sm">
-          <div className="w-5 h-5 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
-          Analisando histórico...
-        </div>
-      )}
-
-      {patterns.length > 0 && (
-        <div className="space-y-3">
-          <p className="text-xs text-gray-500 px-1">L = &lt;{target}x · H = ≥{target}x</p>
-          {patterns.map((p, i) => {
-            const key      = `${p.label}@${target}`
-            const isSaved  = saved.has(key)
-            const isSaving = saving === key
-            return (
-              <div key={i} className={`rounded-xl p-5 border transition-all ${isSaved ? "bg-yellow-500/5 border-yellow-500/30" : "bg-gray-900 border-gray-800"}`}>
-                <div className="flex items-start justify-between mb-3 gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      {isSaved && <span className="text-base leading-none">👑</span>}
-                      <p className="text-white font-mono text-sm font-semibold">{pLabel(p)}</p>
-                    </div>
-                    <p className="text-gray-400 text-xs">{p.occurrences} ocorrências nos últimos 7 dias</p>
-                  </div>
-                  <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                    <p className={`text-lg font-bold ${p.hitRate >= 0.7 ? "text-green-400" : p.hitRate >= 0.5 ? "text-yellow-400" : "text-red-400"}`}>
-                      {(p.hitRate * 100).toFixed(1)}%
-                    </p>
-                    <button onClick={() => savePattern(p)} disabled={isSaved || !!saving}
-                      className={`text-xs font-bold px-3 py-1 rounded-lg transition-all disabled:opacity-60 ${
-                        isSaved ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30" : "bg-green-500 hover:bg-green-400 text-black"
-                      }`}>
-                      {isSaving ? "..." : isSaved ? "👑 Salvo" : "Usar"}
-                    </button>
-                  </div>
-                </div>
-                <div className="h-2 bg-gray-700 rounded-full overflow-hidden mb-3">
-                  <div className="h-full rounded-full bg-green-500" style={{ width: `${p.hitRate*100}%` }} />
-                </div>
-                <div className="flex gap-4 text-xs">
-                  <span className="text-green-400">{p.wins ?? 0} direto</span>
-                  {(p.galeWins ?? []).map((g, gi) => (
-                    <span key={gi} className="text-yellow-400">G{gi+1}: {g}</span>
-                  ))}
-                  <span className="text-red-400 ml-auto">
-                    {p.occurrences - (p.wins ?? 0) - (p.galeWins ?? []).reduce((a,b)=>a+b,0)} loss
-                  </span>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  CRASH ABA 4 — VALIDAR LISTA
-// ═══════════════════════════════════════════════════════════════════════════════
-function parseCrashListLine(line: string, defaultTarget: number): { hhmm: string; target: number } | null {
-  line = line.trim()
-  if (!line) return null
-  const timeMatch = line.match(/^(\d{1,2}:\d{2})/)
-  if (!timeMatch) return null
-  const hhmm = timeMatch[1].padStart(5, "0")
-  const rest = line.slice(timeMatch[0].length).trim()
-  const numMatch = rest.match(/(\d+(?:[.,]\d+)?)/)
-  let target = defaultTarget
-  if (numMatch) {
-    target = parseFloat(numMatch[1].replace(",", "."))
-  }
-  return { hhmm, target }
-}
-
-interface CrashValidationEntry {
-  time: string
-  target: number
-  result: "WIN" | "GALE1" | "GALE2" | "GALE3" | "LOSS" | "PENDENTE"
-  crashPoint?: number
-  galeUsed?: number
-  nextHitInfo?: string
-}
-
-// Procura, a partir de um índice (depois dos gales já esgotados), o próximo
-// round real que teria batido o alvo — só informativo, não conta como vitória.
-function findNextCrashHit(rounds: { created_at: string; crash_point?: number | string }[], fromIdx: number, target: number): string | undefined {
-  for (let i = fromIdx; i < rounds.length; i++) {
-    const cp = parseFloat(rounds[i].crash_point as any)
-    if (!isNaN(cp) && cp >= target) {
-      const { hhmm } = toBR(rounds[i].created_at)
-      return `${hhmm} (${cp.toFixed(2)}x)`
-    }
-  }
-  return undefined
-}
-
-function CrashValidarListaTab() {
-  const [listText, setListText] = useState("")
-  const [target,   setTarget]   = useState(2.0)
-  const [gales,    setGales]    = useState(1)
-  const [validateDate, setValidateDate] = useState(brTodayStr())
-  const [loading,  setLoading]  = useState(false)
-  const [results,  setResults]  = useState<CrashValidationEntry[]>([])
-  const [copied,   setCopied]   = useState(false)
-
-  async function validate() {
-    const entries = listText
-      .split("\n")
-      .map(l => parseCrashListLine(l, target))
-      .filter(Boolean) as { hhmm: string; target: number }[]
-
-    if (!entries.length) return
-    setLoading(true); setResults([])
-
-    // Busca histórico cobrindo a data escolhida (não sempre "hoje") — uma
-    // lista colada depois da meia-noite é de ontem, não de hoje.
-    const isToday = validateDate === brTodayStr()
-    // Pede só o dia BR exato (não "últimos N dias") — Crash tem milhares de
-    // rounds por dia, então cobrir vários dias de uma vez nunca cabia no
-    // limite de páginas e devolvia histórico vazio (tudo LOSS) pra qualquer
-    // data que não fosse hoje.
-    const history = await fetchCrashAggregateByDate(validateDate, 50)
-    const targetRounds = history
-      .filter(r => toBRDate(r.created_at) === validateDate)
-      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
-
-    const validated: CrashValidationEntry[] = entries.map(({ hhmm, target: lineTarget }) => {
-      // Encontra o primeiro round no horário do sinal ou após ele
-      const startIdx = targetRounds.findIndex(r => toBR(r.created_at).hhmm >= hhmm)
-
-      if (startIdx === -1) {
-        if (!isToday) return { time: hhmm, target: lineTarget, result: "LOSS" }
-        const { h: brH, m: brM } = brNowHM()
-        const nowHHMM = `${String(brH).padStart(2,"0")}:${String(brM).padStart(2,"0")}`
-        return { time: hhmm, target: lineTarget, result: hhmm > nowHHMM ? "PENDENTE" : "LOSS" }
-      }
-
-      // Checa o round de entrada + rounds seguintes reais (não minutos consecutivos)
-      for (let g = 0; g <= gales; g++) {
-        const idx = startIdx + g
-        if (idx >= targetRounds.length) break
-        const cp = parseFloat(targetRounds[idx].crash_point as any)
-        if (!isNaN(cp) && cp >= lineTarget) {
-          return {
-            time: hhmm,
-            target: lineTarget,
-            result: g === 0 ? "WIN" : (`GALE${g}` as any),
-            crashPoint: cp,
-            galeUsed: g,
-          }
-        }
-      }
-
-      // Gales esgotados sem bater — mostra informativamente onde bateria depois
-      const entryCp = parseFloat(targetRounds[startIdx].crash_point as any)
-      const nextHitInfo = findNextCrashHit(targetRounds, startIdx + gales + 1, lineTarget)
-      return { time: hhmm, target: lineTarget, result: "LOSS", crashPoint: isNaN(entryCp) ? undefined : entryCp, nextHitInfo }
-    })
-
-    setResults(validated)
-    setLoading(false)
-  }
-
-  const wins   = results.filter(r => r.result === "WIN" || r.result.startsWith("GALE")).length
-  const losses = results.filter(r => r.result === "LOSS").length
-  const total  = results.filter(r => r.result !== "PENDENTE").length
-
-  function copyResults() {
-    const fmtResult = (r: CrashValidationEntry) => {
-      if (r.result === "WIN") return "WIN"
-      if (r.result.startsWith("GALE")) return r.result
-      if (r.result === "LOSS") return "LOSS"
-      return "PENDENTE"
-    }
-    const lines = [
-      "⚡ AUTOWIN — Corrigir Lista Crash",
-      `Gales: ${gales}`,
-      "",
-      ...results.filter(r => r.result !== "PENDENTE").map(r =>
-        `${r.time} (${r.target.toFixed(1)}x)  →  ${r.result === "LOSS" ? "❌" : "✅"} ${fmtResult(r)}${r.crashPoint != null ? ` (${r.crashPoint.toFixed(2)}x)` : ""}${r.result === "LOSS" && r.nextHitInfo ? `  (bateria ${r.nextHitInfo})` : ""}`
-      ),
-    ]
-    const pending = results.filter(r => r.result === "PENDENTE")
-    if (pending.length) { lines.push("", "⏳ PENDENTES:"); pending.forEach(r => lines.push(`${r.time} (${r.target.toFixed(1)}x)`)) }
-    const assertividade = total > 0 ? ((wins/total)*100).toFixed(1) : "0.0"
-    lines.push("", `📊  WIN: ${wins}  |  LOSS: ${losses}`, `🎯  Assertividade: ${assertividade}%`)
-    navigator.clipboard.writeText(lines.join("\n")).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500) })
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
-        <div>
-          <p className="text-xs text-gray-500 mb-1.5 font-medium">Cole sua lista (um horário por linha: HH:MM ou HH:MM multiplicador)</p>
-          <textarea value={listText} onChange={e => setListText(e.target.value)} rows={7}
-            placeholder={"23:36 2\n23:39 2\n23:45 1.5\n23:51 2"}
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-500/50 resize-none" />
-        </div>
-        <div className="grid grid-cols-3 gap-3">
-          <div>
-            <p className="text-xs text-gray-500 mb-1.5 font-medium">Multiplicador padrão</p>
-            <NumberField min={1.01} step={0.1} value={target} onChange={(n) => setTarget(n)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 mb-1.5 font-medium">Qtd. de Gales</p>
-            <NumberField min={0} max={10} value={gales} onChange={(n) => setGales(n)}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 mb-1.5 font-medium">Data da lista</p>
-            <input type="date" value={validateDate} max={brTodayStr()}
-              onChange={(e) => setValidateDate(e.target.value || brTodayStr())}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
-          </div>
-        </div>
-        <button onClick={validate} disabled={loading || !listText.trim()}
-          className="w-full bg-green-500 hover:bg-green-400 disabled:opacity-50 text-black font-bold py-2.5 rounded-xl text-sm transition-colors">
-          {loading ? "Corrigindo..." : "Corrigir Lista"}
-        </button>
-      </div>
-
-      {results.length > 0 && (
-        <>
-          {total > 0 && (
-            <div className="grid grid-cols-2 gap-2">
-              <div className="bg-green-500/15 border border-green-500/30 text-green-400 rounded-xl p-4 text-center">
-                <p className="text-2xl font-bold">{wins}</p>
-                <p className="text-xs opacity-80 mt-0.5">WIN</p>
-              </div>
-              <div className="bg-red-500/15 border border-red-500/30 text-red-400 rounded-xl p-4 text-center">
-                <p className="text-2xl font-bold">{losses}</p>
-                <p className="text-xs opacity-80 mt-0.5">LOSS</p>
-              </div>
-            </div>
-          )}
-
-          <button onClick={copyResults}
-            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-all"
-            style={{ background:"rgba(255,230,0,0.08)", border:"1px solid rgba(255,230,0,0.25)", color:"#FFE600" }}>
-            {copied ? "✅ Copiado!" : "📋 Copiar Resultados"}
-          </button>
-
-          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-            <div className="divide-y divide-gray-800/60">
-              {results.map((r, i) => (
-                <div key={i} className="flex items-center justify-between px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <span className="text-white font-mono text-sm font-bold">{r.time}</span>
-                    <span className="text-xs text-gray-500 font-mono">alvo: {r.target.toFixed(1)}x</span>
-                    {r.crashPoint != null && (
-                      <span className="text-xs font-mono" style={{ color: crashText(r.crashPoint) }}>
-                        {r.crashPoint.toFixed(2)}x
-                      </span>
-                    )}
-                    {r.result === "LOSS" && r.nextHitInfo && (
-                      <span className="text-[11px] text-gray-500">bateria {r.nextHitInfo}</span>
-                    )}
-                  </div>
-                  <span className={`text-xs font-bold px-3 py-1 rounded-full border ${
-                    r.result === "WIN"            ? "bg-green-500/20 text-green-400 border-green-500/30"     :
-                    r.result.startsWith("GALE")   ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" :
-                    r.result === "PENDENTE"        ? "bg-gray-700/50 text-gray-400 border-gray-600"          :
-                                             "bg-red-500/20 text-red-400 border-red-500/30"
-                  }`}>{r.result}</span>
-                </div>
-              ))}
-            </div>
-            {total > 0 && (
-              <div className="px-4 py-3 border-t border-gray-800 flex items-center justify-between">
-                <span className="text-xs text-gray-500">{total} entradas verificadas · {gales} gale{gales !== 1 ? "s" : ""}</span>
-                <span className="text-sm font-bold text-white">{((wins/total)*100).toFixed(1)}% assertividade</span>
-              </div>
-            )}
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 //  PÁGINA PRINCIPAL
 // ═══════════════════════════════════════════════════════════════════════════════
 const FORTUNE_TABS: { id: SubTab; label: string; icon: string }[] = [
@@ -2695,7 +2191,7 @@ const FORTUNE_TABS: { id: SubTab; label: string; icon: string }[] = [
 ]
 
 export default function PremiumPage() {
-  const [game, setGame]       = useState<"double" | "crash" | "fortune">("double")
+  const [game, setGame]       = useState<"double" | "fortune">("double")
   const [tab,  setTab]        = useState<SubTab>("historico")
   const [licensed, setLicensed] = useState(true)
   const [checking, setChecking] = useState(true)
@@ -2706,14 +2202,10 @@ export default function PremiumPage() {
       const isPaid = data.paymentStatus === "PAID" && (!data.expireIn || new Date(data.expireIn) > new Date())
       setLicensed(isPaid || !!data.isTesting || !!data.isAdminAccount)
       
-      const hidden = (data.hiddenGames ?? "").split(",").filter(Boolean)
+      const hidden = (data.hiddenGamesPremiumBlaze ?? "").split(",").filter(Boolean)
       setHiddenGames(hidden)
-      if (hidden.includes("DOUBLE")) {
-        if (!hidden.includes("CRASH")) {
-          setGame("crash")
-        } else if (!hidden.includes("FORTUNE")) {
-          setGame("fortune")
-        }
+      if (hidden.includes("DOUBLE") && !hidden.includes("FORTUNE")) {
+        setGame("fortune")
       }
 
       setChecking(false)
@@ -2750,23 +2242,17 @@ export default function PremiumPage() {
           <div>
             <h1 className="text-xl font-bold text-white">Premium</h1>
             <p className="text-xs text-gray-500">
-              Análise avançada de {game === "double" ? "Double" : game === "crash" ? "Crash" : "Fortune Double"}
+              Análise avançada de {game === "double" ? "Double" : "Fortune Double"}
             </p>
           </div>
         </div>
-        {/* Seletor Double / Crash / Fortune */}
+        {/* Seletor Double / Fortune */}
         <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-xl p-1">
           {!hiddenGames.includes("DOUBLE") && (
             <button onClick={() => { setGame("double");  setTab("historico") }}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
                 game === "double" ? "bg-green-500 text-black" : "text-gray-500 hover:text-white"
               }`}>🎯 Double</button>
-          )}
-          {!hiddenGames.includes("CRASH") && (
-            <button onClick={() => { setGame("crash");   setTab("historico") }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                game === "crash" ? "bg-green-500 text-black" : "text-gray-500 hover:text-white"
-              }`}>🚀 Crash</button>
           )}
           {!hiddenGames.includes("DOUBLE") && !hiddenGames.includes("FORTUNE") && (
             <button onClick={() => { setGame("fortune"); setTab("historico") }}
@@ -2798,13 +2284,6 @@ export default function PremiumPage() {
             {tab === "gerador"   && <GeradorListaTab />}
             {tab === "buscar"    && <BuscarPadraoTab />}
             {tab === "validar"   && <ValidarListaTab />}
-          </>
-        ) : game === "crash" ? (
-          <>
-            {tab === "historico" && <CrashHistoricoTab />}
-            {tab === "gerador"   && <CrashGeradorListaTab />}
-            {tab === "buscar"    && <CrashBuscarPadraoTab />}
-            {tab === "validar"   && <CrashValidarListaTab />}
           </>
         ) : (
           <>

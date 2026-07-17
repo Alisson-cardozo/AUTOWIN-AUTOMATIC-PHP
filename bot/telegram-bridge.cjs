@@ -10,7 +10,10 @@ const { Api } = require("telegram/tl");
 const fs = require("fs");
 const path = require("path");
 
-const ROOT = path.resolve(__dirname, "..");
+// AUTOWIN_ROOT: use quando este script rodar fora do projeto PHP (ex.: Aplicação
+// Node.js separada no hPanel) — deve apontar pra pasta que contém "storage/"
+// do app PHP, senão sessões pendentes ficam isoladas num storage errado.
+const ROOT = process.env.AUTOWIN_ROOT || path.resolve(__dirname, "..");
 const PENDING_DIR = path.join(ROOT, "storage", "telegram-pending");
 
 function ensurePendingDir() {
@@ -242,6 +245,22 @@ async function handlePollMessages(input) {
   });
 }
 
+/**
+ * Dispatcher reutilizável (usado tanto pelo CLI stdin quanto pelo servidor HTTP).
+ */
+async function handle(action, input) {
+  const apiId = parseInt(String(input.apiId || "0"), 10);
+  const apiHash = String(input.apiHash || "");
+  const ctx = { ...input, apiId, apiHash };
+
+  if (action === "send-code") return handleSendCode(ctx);
+  if (action === "verify-code") return handleVerifyCode(ctx);
+  if (action === "search-groups") return handleSearchGroups(ctx);
+  if (action === "fetch-messages") return handleFetchMessages(ctx);
+  if (action === "poll-messages") return handlePollMessages(ctx);
+  throw new Error("Ação inválida: " + action);
+}
+
 async function main() {
   let raw = "";
   if (process.argv[2]) {
@@ -262,36 +281,16 @@ async function main() {
     return;
   }
 
-  const action = input.action;
-  const apiId = parseInt(String(input.apiId || "0"), 10);
-  const apiHash = String(input.apiHash || "");
-
   try {
-    if (action === "send-code") {
-      ok(await handleSendCode({ ...input, apiId, apiHash }));
-      return;
-    }
-    if (action === "verify-code") {
-      ok(await handleVerifyCode({ ...input, apiId, apiHash }));
-      return;
-    }
-    if (action === "search-groups") {
-      ok(await handleSearchGroups({ ...input, apiId, apiHash }));
-      return;
-    }
-    if (action === "fetch-messages") {
-      ok(await handleFetchMessages({ ...input, apiId, apiHash }));
-      return;
-    }
-    if (action === "poll-messages") {
-      ok(await handlePollMessages({ ...input, apiId, apiHash }));
-      return;
-    }
-    fail("Ação inválida: " + action);
+    ok(await handle(input.action, input));
   } catch (err) {
     const message = err?.message || err?.errorMessage || String(err) || "Erro desconhecido";
     fail(message);
   }
 }
 
-main();
+module.exports = { handle };
+
+if (require.main === module) {
+  main();
+}

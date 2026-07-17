@@ -48,6 +48,56 @@ final class Auth
         return $id;
     }
 
+    /**
+     * Identidade a partir de um token de dispositivo (app Android, motor de
+     * aposta local) — independente da sessão web (cookie). Revogável por
+     * aparelho (device_tokens.revokedAt) sem afetar o login no navegador.
+     */
+    public static function userIdFromDeviceToken(string $token): ?int
+    {
+        $token = trim($token);
+        if ($token === '') {
+            return null;
+        }
+        $hash = hash('sha256', $token);
+        $row = Database::fetch(
+            'SELECT id, ownerId FROM device_tokens WHERE tokenHash = ? AND revokedAt IS NULL',
+            [$hash]
+        );
+        if (!$row) {
+            return null;
+        }
+        Database::update('device_tokens', ['lastSeenAt' => now()], 'id = ?', [$row['id']]);
+        return (int) $row['ownerId'];
+    }
+
+    /**
+     * Autentica por cookie (navegador) OU header "Authorization: Bearer
+     * <deviceToken>" (chamadas nativas do app Android / browser bridge) —
+     * usado pelas rotas de bridge que tanto o site quanto o app podem chamar.
+     *
+     * @param  array<string, string>  $errorHeaders  ex.: CORS do bridge
+     */
+    public static function requireUserIdFromCookieOrDevice(array $errorHeaders = []): int
+    {
+        $viaCookie = self::userId();
+        if ($viaCookie) {
+            return $viaCookie;
+        }
+        // Alguns proxies/hosts só expõem o bearer em REDIRECT_HTTP_AUTHORIZATION
+        $header = $_SERVER['HTTP_AUTHORIZATION']
+            ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
+            ?? '';
+        if (is_string($header) && preg_match('/^Bearer\s+(\S+)$/i', $header, $m)) {
+            $viaDevice = self::userIdFromDeviceToken($m[1]);
+            if ($viaDevice) {
+                return $viaDevice;
+            }
+        }
+        json_response(['error' => 'Não autorizado'], 401, $errorHeaders);
+        return 0; // json_response() encerra a request; nunca chega aqui.
+    }
+
     public static function adminId(): ?int
     {
         if (self::$elevatedAdminId !== null) {

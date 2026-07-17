@@ -50,9 +50,27 @@ foreach ($parts as $part) {
 
 echo "Schema aplicado com sucesso no banco `{$dbName}`.\n";
 
+// Garante admin padrão se a tabela estiver vazia
+try {
+    $c = (int) $pdo->query('SELECT COUNT(*) FROM admin_users')->fetchColumn();
+    if ($c === 0) {
+        $hash = password_hash('adm123', PASSWORD_BCRYPT, ['cost' => 12]);
+        $stmt = $pdo->prepare(
+            'INSERT INTO admin_users (username, email, password, createdAt) VALUES (?, ?, ?, NOW())'
+        );
+        $stmt->execute(['adm', 'adm@adm.com', $hash]);
+        echo "Admin padrão criado: adm@adm.com / adm123\n";
+    } else {
+        echo "Admin já existe ({$c}) — seed ignorado.\n";
+    }
+} catch (Throwable $e) {
+    echo "AVISO seed admin: " . $e->getMessage() . "\n";
+}
+
 // Migrações leves (colunas novas em tabelas já existentes)
 $alters = [
     "ALTER TABLE `bot_entries` ADD COLUMN `gameType` VARCHAR(20) NULL AFTER `type`",
+    "ALTER TABLE `bot_entries` ADD COLUMN `accountType` VARCHAR(10) NULL AFTER `platform`",
 ];
 foreach ($alters as $sqlAlter) {
     try {

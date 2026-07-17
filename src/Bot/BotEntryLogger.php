@@ -14,8 +14,9 @@ final class BotEntryLogger
 {
     /**
      * @param 'WIN'|'LOSS'|'GALE'|'OBS_WIN'|'OBS_LOSS' $type
-     * @param 'DOUBLE'|'CRASH'|'FORTUNE'|'BACBO' $gameType
-     * @param 'BLAZE'|'JONBET' $platform
+     * @param string $gameType DOUBLE|FORTUNE|BACBO|DAY_TRADE|…
+     * @param string $platform BLAZE|JONBET|IQOPTION
+     * @param 'REAL'|'DEMO'|null $accountType
      */
     public static function log(
         int $ownerId,
@@ -27,9 +28,18 @@ final class BotEntryLogger
         ?string $pattern = null,
         ?float $betAmount = null,
         ?float $profit = null,
-        ?int $galeLevel = null
+        ?int $galeLevel = null,
+        ?string $accountType = null
     ): void {
         try {
+            $plat = strtoupper(trim($platform));
+            if (in_array($plat, ['JONBET'], true)) {
+                $plat = 'JONBET';
+            } elseif (in_array($plat, ['IQOPTION', 'DAYTRADE', 'DAY_TRADE', 'IQ'], true)) {
+                $plat = 'IQOPTION';
+            } else {
+                $plat = 'BLAZE';
+            }
             $row = [
                 'type' => $type,
                 'signalColor' => $signalColor,
@@ -38,7 +48,8 @@ final class BotEntryLogger
                 'betAmount' => $betAmount,
                 'profit' => $profit,
                 'galeLevel' => $galeLevel,
-                'platform' => strtoupper($platform) === 'JONBET' ? 'JONBET' : 'BLAZE',
+                'platform' => $plat,
+                'accountType' => $accountType,
                 'ownerId' => $ownerId,
                 'createdAt' => now(),
             ];

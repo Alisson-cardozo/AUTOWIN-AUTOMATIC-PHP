@@ -29,6 +29,11 @@ final class Router
         return $this->add('DELETE', $path, $handler);
     }
 
+    public function options(string $path, callable|array $handler): self
+    {
+        return $this->add('OPTIONS', $path, $handler);
+    }
+
     public function any(string $path, callable|array $handler): self
     {
         foreach (['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as $m) {

@@ -2,6 +2,10 @@
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
+
+
+
+
 CREATE TABLE IF NOT EXISTS `admin_users` (
   `id` INT NOT NULL AUTO_INCREMENT,
   `username` VARCHAR(100) NOT NULL,
@@ -12,6 +16,13 @@ CREATE TABLE IF NOT EXISTS `admin_users` (
   UNIQUE KEY `admin_users_username_unique` (`username`),
   UNIQUE KEY `admin_users_email_unique` (`email`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Admin padrão (só se a tabela estiver vazia)
+-- Login: adm@adm.com  |  Senha: adm123  |  Usuário: adm
+INSERT INTO `admin_users` (`username`, `email`, `password`, `createdAt`)
+SELECT 'adm', 'adm@adm.com', '$2y$12$PwqeUGbY0gRAH.KItQwiCu88UlWSS1cKR59BJIQiSzFUzaD/QZUAa', NOW()
+FROM DUAL
+WHERE NOT EXISTS (SELECT 1 FROM `admin_users` LIMIT 1);
 
 CREATE TABLE IF NOT EXISTS `users` (
   `id` INT NOT NULL AUTO_INCREMENT,
@@ -238,6 +249,7 @@ CREATE TABLE IF NOT EXISTS `bot_entries` (
   `profit` DOUBLE NULL,
   `galeLevel` INT NULL,
   `platform` VARCHAR(10) NOT NULL DEFAULT 'BLAZE',
+  `accountType` VARCHAR(10) NULL,
   `ownerId` INT NOT NULL,
   `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -370,6 +382,143 @@ CREATE TABLE IF NOT EXISTS `bacbo_bot_entries` (
   PRIMARY KEY (`id`),
   KEY `bacbo_bot_entries_ownerId_idx` (`ownerId`),
   CONSTRAINT `bacbo_bot_entries_ownerId_fkey` FOREIGN KEY (`ownerId`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ── Bac Bo Ao Vivo (mesa separada — mesmos campos, dados isolados) ────────
+CREATE TABLE IF NOT EXISTS `bacbo_live_results` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `externalId` VARCHAR(50) NOT NULL,
+  `winner` VARCHAR(20) NOT NULL,
+  `playerTotal` INT NOT NULL,
+  `bankerTotal` INT NOT NULL,
+  `player1` INT NOT NULL DEFAULT 0,
+  `player2` INT NOT NULL DEFAULT 0,
+  `banker1` INT NOT NULL DEFAULT 0,
+  `banker2` INT NOT NULL DEFAULT 0,
+  `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `bacbo_live_results_externalId_unique` (`externalId`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `bacbo_live_strategies` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `sequence` VARCHAR(500) NOT NULL,
+  `color` VARCHAR(20) NOT NULL,
+  `strategyType` VARCHAR(30) NOT NULL DEFAULT 'SEQUÊNCIA',
+  `ownerId` INT NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `bacbo_live_strategies_ownerId_idx` (`ownerId`),
+  CONSTRAINT `bacbo_live_strategies_ownerId_fkey` FOREIGN KEY (`ownerId`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `bacbo_live_settings` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `strategyType` VARCHAR(50) NOT NULL DEFAULT 'SEQUÊNCIA',
+  `enterType` VARCHAR(20) NOT NULL DEFAULT 'VALOR',
+  `enterPercent` DOUBLE NOT NULL DEFAULT 0,
+  `enterValue` DOUBLE NOT NULL DEFAULT 0,
+  `stopType` VARCHAR(20) NOT NULL DEFAULT 'VALOR',
+  `stopGain` VARCHAR(20) NOT NULL DEFAULT '0',
+  `stopLoss` VARCHAR(20) NOT NULL DEFAULT '0',
+  `protectionHand` VARCHAR(5) NOT NULL DEFAULT 'NÃO',
+  `protectionValue` DOUBLE NOT NULL DEFAULT 0,
+  `whiteMultiplier` DOUBLE NOT NULL DEFAULT 2,
+  `martingale` INT NOT NULL DEFAULT 1,
+  `martingaleMultiplier` DOUBLE NOT NULL DEFAULT 2,
+  `whiteEntryGaleEnabled` TINYINT(1) NOT NULL DEFAULT 0,
+  `whiteEntryGale` INT NOT NULL DEFAULT 1,
+  `whiteEntryGaleMultiplier` DOUBLE NOT NULL DEFAULT 2,
+  `whiteEntryType` VARCHAR(20) NOT NULL DEFAULT 'VALOR',
+  `whiteEntryValue` DOUBLE NOT NULL DEFAULT 0,
+  `whiteEntryPercent` DOUBLE NOT NULL DEFAULT 0,
+  `quantityCycles` INT NOT NULL DEFAULT 1,
+  `skipFirstEntry` TINYINT(1) NOT NULL DEFAULT 0,
+  `skipEntryAfterLoss` TINYINT(1) NOT NULL DEFAULT 0,
+  `ownerId` INT NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `bacbo_live_settings_ownerId_unique` (`ownerId`),
+  CONSTRAINT `bacbo_live_settings_ownerId_fkey` FOREIGN KEY (`ownerId`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `bacbo_live_variables` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `countLoss` INT NOT NULL DEFAULT 0,
+  `countWin` INT NOT NULL DEFAULT 0,
+  `countMartingale` INT NOT NULL DEFAULT 0,
+  `profit` DOUBLE NOT NULL DEFAULT 0,
+  `balance` DOUBLE NOT NULL DEFAULT 0,
+  `firstBalance` DOUBLE NOT NULL DEFAULT 0,
+  `firstBalanceDate` DATETIME NULL,
+  `monthStartBalance` DOUBLE NOT NULL DEFAULT 0,
+  `monthStartDate` DATETIME NULL,
+  `monthCountWin` INT NOT NULL DEFAULT 0,
+  `monthCountLoss` INT NOT NULL DEFAULT 0,
+  `isGale` TINYINT(1) NOT NULL DEFAULT 0,
+  `lastCycleWasLoss` TINYINT(1) NOT NULL DEFAULT 0,
+  `ownerId` INT NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `bacbo_live_variables_ownerId_unique` (`ownerId`),
+  CONSTRAINT `bacbo_live_variables_ownerId_fkey` FOREIGN KEY (`ownerId`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `bacbo_live_bot_entries` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `type` VARCHAR(20) NOT NULL,
+  `signalColor` VARCHAR(20) NULL,
+  `resultColor` VARCHAR(20) NULL,
+  `pattern` VARCHAR(200) NULL,
+  `betAmount` DOUBLE NULL,
+  `profit` DOUBLE NULL,
+  `galeLevel` INT NULL,
+  `ownerId` INT NOT NULL,
+  `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `bacbo_live_bot_entries_ownerId_idx` (`ownerId`),
+  CONSTRAINT `bacbo_live_bot_entries_ownerId_fkey` FOREIGN KEY (`ownerId`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Fila de apostas Bac Bo REAL via navegador do cliente (reaproveita a conexão
+-- WebSocket já aberta e autenticada na Evolution, evitando o bloqueio Akamai
+-- que trava a VPS). Worker grava aqui, script no navegador do cliente
+-- consulta (poll) e reporta o resultado de volta.
+CREATE TABLE IF NOT EXISTS `bacbo_bridge_bets` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `userId` INT NOT NULL,
+  `spot` VARCHAR(20) NOT NULL,
+  `amount` DOUBLE NOT NULL,
+  `protectionAmount` DOUBLE NOT NULL DEFAULT 0,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'pending',
+  `resultJson` TEXT NULL,
+  `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updatedAt` DATETIME NULL,
+  PRIMARY KEY (`id`),
+  KEY `bacbo_bridge_bets_userId_status_idx` (`userId`, `status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Heartbeat do bridge de navegador (public/bacbo-bridge.js): cada poll
+-- atualiza lastPollAt, pra BacBoBrowserBridge::deviceConnected() saber que
+-- tem uma aba de verdade ativa agora, sem precisar de app/dispositivo pareado.
+CREATE TABLE IF NOT EXISTS `bacbo_bridge_heartbeat` (
+  `ownerId` INT NOT NULL,
+  `lastPollAt` DATETIME NOT NULL,
+  PRIMARY KEY (`ownerId`),
+  CONSTRAINT `bacbo_bridge_heartbeat_ownerId_fkey` FOREIGN KEY (`ownerId`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tokens de pareamento do app Android (motor de aposta local no celular).
+-- Revogável por dispositivo, sem afetar a sessão web (cookie) do usuário.
+CREATE TABLE IF NOT EXISTS `device_tokens` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `ownerId` INT NOT NULL,
+  `tokenHash` CHAR(64) NOT NULL,
+  `deviceLabel` VARCHAR(100) NULL,
+  `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `lastSeenAt` DATETIME NULL,
+  `revokedAt` DATETIME NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `device_tokens_tokenHash_uidx` (`tokenHash`),
+  KEY `device_tokens_ownerId_idx` (`ownerId`),
+  CONSTRAINT `device_tokens_ownerId_fkey` FOREIGN KEY (`ownerId`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Comandos IPC entre web e worker de bots

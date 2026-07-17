@@ -6,7 +6,14 @@ declare(strict_types=1);
  * Worker longo de bots — rode em paralelo ao servidor web:
  *   php bot/worker.php
  *
- * Também pode ser iniciado automaticamente pelo painel (BotWorker::ensureRunning).
+ * Também pode ser iniciado automaticamente pelo painel (BotWorker::ensureRunning),
+ * quando exec()/popen() estão disponíveis (não é o caso em hospedagem compartilhada).
+ *
+ * Hospedagem compartilhada (sem exec/proc_open): configure um cron do painel
+ * rodando este script periodicamente. Defina WORKER_MAX_SECONDS (ex.: 280) pra
+ * ele encerrar sozinho antes do próximo disparo do cron — evita instância presa
+ * além do limite de execução do host. Sem essa env, roda para sempre (padrão
+ * atual, pensado pra VPS/systemd/PM2 ou dev local).
  */
 
 require dirname(__DIR__) . '/vendor/autoload.php';
@@ -14,11 +21,26 @@ require dirname(__DIR__) . '/vendor/autoload.php';
 use App\Bootstrap;
 use App\Bot\EngineManager;
 use App\Services\BacBoWsFeed;
+use App\Services\BotWorker;
 
 Bootstrap::init();
 
 $pidFile = storage_path('bot-worker.pid');
+
+// Cron pode disparar este script antes do anterior terminar — se já tem uma
+// instância viva, esta encerra sem fazer nada (evita workers duplicados).
+if (is_file($pidFile)) {
+    $existingPid = (int) trim((string) @file_get_contents($pidFile));
+    if ($existingPid > 0 && $existingPid !== getmypid() && BotWorker::isAlive($existingPid)) {
+        echo '[' . date('H:i:s') . "] worker já ativo (pid=$existingPid) — encerrando\n";
+        exit(0);
+    }
+}
+
 @file_put_contents($pidFile, (string) getmypid());
+
+$maxSeconds = (int) (getenv('WORKER_MAX_SECONDS') ?: 0);
+$startedAt = microtime(true);
 
 // limpa pid ao sair
 register_shutdown_function(static function () use ($pidFile): void {
@@ -57,6 +79,11 @@ try {
 $lastCmd = 0;
 $lastFeedCheck = 0;
 while (true) {
+    if ($maxSeconds > 0 && (microtime(true) - $startedAt) >= $maxSeconds) {
+        echo '[' . date('H:i:s') . "] worker encerrando (WORKER_MAX_SECONDS=$maxSeconds) — cron reinicia em seguida\n";
+        break;
+    }
+
     // renova pid (caso outro processo sobrescreva)
     @file_put_contents($pidFile, (string) getmypid());
 

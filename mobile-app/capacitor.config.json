@@ -1,0 +1,12 @@
+{
+  "appId": "com.autowin.app",
+  "appName": "Autowin",
+  "webDir": "www",
+  "server": {
+    "url": "https://alisson-projetos.fun",
+    "cleartext": false
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

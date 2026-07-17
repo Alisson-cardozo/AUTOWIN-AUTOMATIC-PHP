@@ -7,9 +7,13 @@ namespace App\Bot\Games;
 use App\Bot\Blaze\BlazeAPI;
 use App\Bot\PatternAccuracy;
 use App\Database;
+use App\Models\ConfigRepository;
 use App\Models\UserRepository;
+
 use App\Services\BotCommandService;
 use App\Services\EvolutionBacBo;
+use App\Services\Notify;
+use App\Services\TelegramBridge;
 
 /**
  * Motor Bac Bo — estratégias/gale/stop iguais ao Double.
@@ -27,11 +31,17 @@ final class BacBoEngine
     // Mesa real Blaze bac-bo (BacBo00000000001): tableMinLimit = 5.
     private const MIN_BET_DEMO = 5.0;
     private const MIN_BET_REAL = 5.0;
+    // Mesa Bac Bo Ao Vivo: tableMinLimit = 2.50 (entrada e proteção).
+    private const MIN_BET_LIVE = 2.5;
 
     private int $userId;
     private bool $forceReset;
     private bool $isDemo;
     private ?BlazeAPI $api;
+    /** @var 'bacbo'|'bacbo_live' sala Blaze (dados e mesa separados) */
+    private string $room;
+    private string $gameTypeCode;
+    private string $roomLabel;
     private bool $running = false;
 
     /** @var list<array{winner:string,score:int,player1:int,player2:int,banker1:int,banker2:int}> */
@@ -71,6 +81,20 @@ final class BacBoEngine
     /** Sinal REAL pendente (falha de mesa / aguardando janela) — re-tenta sem redetectar. */
     private ?string $pendingRealSignal = null;
 
+    // ── Telegram / COPIAR SALA DE SINAL ──────────────────────────
+    private ?string $pendingTelegramSignal = null;
+    private int $lastTgMsgId = 0;
+    private bool $tgCursorSeeded = false;
+    private float $lastTgPoll = 0;
+    private bool $tgAnnounced = false;
+    private ?string $tgSession = null;
+    private ?string $tgGroupId = null;
+    /** @var list<string> */
+    private array $tgKeywords = [];
+    private ?string $tgSignalKeyword = null;
+    private bool $tgSignalKeywordVerified = false;
+    private bool $tgConfigured = false;
+
     private ?array $cachedSettings = null;
     private ?array $cachedStrategies = null;
     private float $lastPollAt = 0;
@@ -79,12 +103,34 @@ final class BacBoEngine
         int $userId,
         bool $forceReset = false,
         ?BlazeAPI $api = null,
-        bool $isDemo = true
+        bool $isDemo = true,
+        string $room = 'bacbo'
     ) {
         $this->userId = $userId;
         $this->forceReset = $forceReset;
         $this->api = $api;
         $this->isDemo = $isDemo || $api === null || $api->getToken() === null || $api->getToken() === '';
+        $this->room = ($room === 'bacbo_live' || $room === 'bacbo-live' || $room === 'BACBO_LIVE')
+            ? 'bacbo_live'
+            : 'bacbo';
+        $this->gameTypeCode = $this->room === 'bacbo_live' ? 'BACBO_LIVE' : 'BACBO';
+        $this->roomLabel = $this->room === 'bacbo_live' ? 'Bac Bo Ao Vivo' : 'Bac Bo';
+    }
+
+    /** Tabela isolada por sala. */
+    private function tbl(string $suffix): string
+    {
+        return $this->room === 'bacbo_live' ? 'bacbo_live_' . $suffix : 'bacbo_' . $suffix;
+    }
+
+    private function resultsGameKey(): string
+    {
+        return $this->room === 'bacbo_live' ? 'bacbo-live' : 'bacbo';
+    }
+
+    private function blazePlaySlug(): string
+    {
+        return $this->room === 'bacbo_live' ? 'bac-bo-ao-vivo' : 'bac-bo';
     }
 
     public function start(): void
@@ -94,28 +140,43 @@ final class BacBoEngine
         $this->preloadHistory();
         $this->cachedSettings = $this->getSettings();
         $this->cachedStrategies = $this->loadStrategies();
+        $this->loadTelegramConfig();
         // Primeira leitura só ancora lastSeenId (se ainda não veio do preload)
         // — não deve tratar o histórico inteiro como "rodadas ao vivo".
         $this->pollSource();
         $this->lastPollAt = microtime(true);
 
+        $stype = (string) ($this->cachedSettings['strategyType'] ?? 'SEQUÊNCIA');
         if ($this->isDemo) {
-            $this->msg('🟢 Bot Bac Bo iniciado (DEMO) — entradas simuladas');
+            $this->msg('🟢 Bot ' . $this->roomLabel . ' iniciado (DEMO) — entradas simuladas · ' . $stype);
         } else {
-            $this->msg('🟢 Bot Bac Bo iniciado (REAL) — sessão Evolution isolada deste usuário');
+            $this->msg('🟢 Bot ' . $this->roomLabel . ' iniciado (REAL) — sessão Evolution isolada · ' . $stype);
             $this->warmRealSession();
+        }
+
+        if ($stype === 'COPIAR SALA DE SINAL') {
+            if ($this->tgConfigured) {
+                $this->msg('📡 Telegram conectado — aguardando sinais do grupo (PLAYER / BANKER / EMPATE)…');
+                $this->tgAnnounced = true;
+            } else {
+                $this->msg('⚠️ COPIAR SALA DE SINAL: Telegram não configurado. Conecte o grupo em Estratégias (aba ' . $this->roomLabel . ').');
+            }
         }
     }
 
     public function stop(): void
     {
         $this->running = false;
+        $this->pendingTelegramSignal = null;
         // Não apaga sessão Evolution no stop curto — reutiliza no próximo start REAL
         // (clear só se logout/falha grave). Isolamento por userId permanece.
     }
 
     private function minBet(): float
     {
+        if ($this->room === 'bacbo_live') {
+            return self::MIN_BET_LIVE;
+        }
         return $this->isDemo ? self::MIN_BET_DEMO : self::MIN_BET_REAL;
     }
 
@@ -134,7 +195,7 @@ final class BacBoEngine
             $bal = $this->api->extractBalance($wallet);
             if ($bal > 0) {
                 $this->simulatedBalance = $bal;
-                Database::update('bacbo_variables', [
+                Database::update($this->tbl('variables'), [
                     'balance' => $bal,
                     'firstBalance' => $bal,
                     'profit' => 0,
@@ -144,16 +205,25 @@ final class BacBoEngine
             // mantém saldo já em bacbo_variables
         }
         try {
-            $play = $this->api->playBacBo('BRL');
+            $play = $this->api->playBacBo('BRL', $this->blazePlaySlug());
             $launchUrl = BlazeAPI::extractBacBoLaunchUrl(is_array($play) ? $play : []);
             $res = EvolutionBacBo::ensureSession($this->userId, $token, $launchUrl);
             if (!empty($res['ok'])) {
                 $this->msg('🔗 Mesa Evolution pronta (user #' . $this->userId . ') · table ' . ($res['tableId'] ?? '?'));
             } else {
-                $this->msg('⚠️ Launch Evolution: ' . ($res['error'] ?? 'falhou') . ' — tentará de novo em cada entrada (modo REAL mantido).');
+                $code = (string) ($res['code'] ?? '');
+                $err = (string) ($res['error'] ?? 'falhou');
+                if ($code === 'AKAMAI_BLOCKED' || str_contains($err, 'Akamai')) {
+                    $this->msg(
+                        '🚫 Launch Evolution bloqueado pela **Akamai** (IP VPS). '
+                        . 'Configure proxy residencial em **Admin → Proxy** — modo REAL mantido.'
+                    );
+                } else {
+                    $this->msg('⚠️ Launch Evolution: ' . $err . ' — tentará de novo em cada entrada (modo REAL mantido).');
+                }
             }
         } catch (\Throwable $e) {
-            $this->msg('⚠️ Launch Bac Bo: ' . $e->getMessage() . ' — modo REAL mantido.');
+            $this->msg('⚠️ Launch ' . $this->roomLabel . ': ' . $e->getMessage() . ' — modo REAL mantido.');
         }
     }
 
@@ -177,6 +247,7 @@ final class BacBoEngine
     {
         $this->cachedSettings = $this->getSettings();
         $this->cachedStrategies = $this->loadStrategies();
+        $this->loadTelegramConfig();
     }
 
     public function tick(): void
@@ -185,7 +256,40 @@ final class BacBoEngine
             return;
         }
         $now = microtime(true);
-        if ($now - $this->lastPollAt >= 4) {
+        $settings = $this->cachedSettings ?? $this->getSettings();
+        $stype = (string) ($settings['strategyType'] ?? 'SEQUÊNCIA');
+
+        // COPIAR SALA: poll Telegram (~1.5s) e tenta entrar assim que o sinal chega
+        if ($stype === 'COPIAR SALA DE SINAL') {
+            if (!$this->tgConfigured) {
+                $this->loadTelegramConfig();
+            }
+            if ($this->tgConfigured && $now - $this->lastTgPoll >= 1.5) {
+                $this->lastTgPoll = $now;
+                try {
+                    $this->pollTelegramSignals();
+                } catch (\Throwable $e) {
+                    log_msg('[bacbo] tg poll: ' . $e->getMessage(), 'bot');
+                }
+            }
+            // Sinal Telegram pronto + sem aposta em andamento → entra (REAL espera janela na mesa)
+            if (
+                $this->pendingTelegramSignal
+                && !$this->betInFlight
+                && !$this->sfeObserving
+                && $this->running
+            ) {
+                $this->cooldownRoundsRemaining = 0;
+                try {
+                    $this->decideEntry();
+                } catch (\Throwable $e) {
+                    log_msg('[bacbo] decideEntry tg: ' . $e->getMessage(), 'bot');
+                }
+            }
+        }
+
+        // Resultados TipMiner / feed (resolve WIN/LOSS + sequências)
+        if ($now - $this->lastPollAt >= 1.5) {
             $this->lastPollAt = $now;
             try {
                 $this->pollSource();
@@ -199,7 +303,7 @@ final class BacBoEngine
     {
         $strategyType = (string) ($this->cachedSettings['strategyType'] ?? 'SEQUÊNCIA');
         BotCommandService::pushMessage($this->userId, $m, 'BLAZE', $strategyType);
-        log_msg("[bacbo:{$this->userId}] $m", 'bot');
+        log_msg("[{$this->gameTypeCode}:{$this->userId}] $m", 'bot');
     }
 
     private function accuracySuffix(): string
@@ -212,17 +316,17 @@ final class BacBoEngine
 
     private function getSettings(): ?array
     {
-        return Database::fetch('SELECT * FROM bacbo_settings WHERE ownerId = ?', [$this->userId]);
+        return Database::fetch('SELECT * FROM ' . $this->tbl('settings') . ' WHERE ownerId = ?', [$this->userId]);
     }
 
     private function loadStrategies(): array
     {
-        return Database::fetchAll('SELECT * FROM bacbo_strategies WHERE ownerId = ?', [$this->userId]);
+        return Database::fetchAll('SELECT * FROM ' . $this->tbl('strategies') . ' WHERE ownerId = ?', [$this->userId]);
     }
 
     private function preloadHistory(): void
     {
-        $rows = Database::fetchAll('SELECT * FROM bacbo_results ORDER BY id DESC LIMIT 14');
+        $rows = Database::fetchAll('SELECT * FROM ' . $this->tbl('results') . ' ORDER BY id DESC LIMIT 14');
         if (!$rows) {
             return;
         }
@@ -287,12 +391,12 @@ final class BacBoEngine
         if (!$this->running) {
             return;
         }
-        $results = BacBoSource::fetchSource();
+        $results = BacBoSource::fetchSource($this->resultsGameKey());
         if (!$results) {
             return;
         }
         try {
-            BacBoSource::persistNew($results);
+            BacBoSource::persistNew($results, $this->resultsGameKey());
         } catch (\Throwable $e) {
             log_msg('[bacbo] erro ao persistir: ' . $e->getMessage(), 'bot');
         }
@@ -339,7 +443,7 @@ final class BacBoEngine
             // Pós-observação: após o resultado, tenta entrar (REAL espera janela da mesa no bridge).
             if ($this->sfeReady && $this->running) {
                 $this->cooldownRoundsRemaining = 0;
-                log_msg("[bacbo:{$this->userId}] pós-observação → entrada após resultado ({$this->sfeColor})", 'bot');
+                log_msg("[{$this->gameTypeCode}:{$this->userId}] pós-observação → entrada após resultado ({$this->sfeColor})", 'bot');
                 if (!$this->isDemo) {
                     $this->msg("📡 Resultado da observação recebido — verificando se a janela de apostas está aberta…");
                 }
@@ -359,9 +463,6 @@ final class BacBoEngine
 
         $this->pushHistory($raw);
 
-        if ($this->betInFlight || !$this->running) {
-            return;
-        }
         if ($this->liveRoundsCount < 1) {
             return;
         }
@@ -377,20 +478,24 @@ final class BacBoEngine
     {
         $settings = $this->cachedSettings;
         if (!$settings) {
+            log_msg("[BACBO-DEBUG:{$this->userId}] decideEntry abortado: cachedSettings vazio", 'bot');
             return;
         }
 
-        $vars = Database::fetch('SELECT * FROM bacbo_variables WHERE ownerId = ?', [$this->userId]);
+        $vars = Database::fetch('SELECT * FROM ' . $this->tbl('variables') . ' WHERE ownerId = ?', [$this->userId]);
         if (!$vars) {
+            log_msg("[BACBO-DEBUG:{$this->userId}] decideEntry abortado: tabela variables vazia", 'bot');
             return;
         }
         $user = UserRepository::find($this->userId);
         if (!$user) {
+            log_msg("[BACBO-DEBUG:{$this->userId}] decideEntry abortado: usuario nao encontrado no banco", 'bot');
             return;
         }
 
         if ($this->licenseExpired($user)) {
             $this->msg('⛔ Licença expirada — bot parado.');
+            log_msg("[BACBO-DEBUG:{$this->userId}] Licenca expirada", 'bot');
             $this->stop();
             UserRepository::update($this->userId, ['isActive' => 0]);
             return;
@@ -398,12 +503,15 @@ final class BacBoEngine
 
         $inGale = !empty($vars['isGale']) && !empty($user['colorBefore']);
         $fromSfe = false;
+        $signal = '';
 
         if ($this->pendingRealSignal !== null && $this->pendingRealSignal !== '') {
             // Re-tentativa REAL (mesa falhou / janela fechada) — não redetecta padrão
             $signal = $this->pendingRealSignal;
+            log_msg("[BACBO-DEBUG:{$this->userId}] Usando sinal pendente: {$signal}", 'bot');
         } elseif ($inGale) {
             $signal = (string) $user['colorBefore'];
+            log_msg("[BACBO-DEBUG:{$this->userId}] Usando sinal de Gale (colorBefore): {$signal}", 'bot');
             if ($this->currentSignalColor === '') {
                 $this->currentSignalColor = $signal;
             }
@@ -417,11 +525,14 @@ final class BacBoEngine
             $fromSfe = true;
             $this->lastMatchedPattern = $this->sfePattern;
             $this->lastMatchedPatternAccuracy = $this->sfeAccuracy;
+            log_msg("[BACBO-DEBUG:{$this->userId}] Usando sinal do SFE: {$signal}", 'bot');
         } else {
             $signal = $this->detectSignal($settings);
             if (!$signal) {
+                log_msg("[BACBO-DEBUG:{$this->userId}] Nenhum padrao de estrategia detectado nesta rodada.", 'bot');
                 return;
             }
+            log_msg("[BACBO-DEBUG:{$this->userId}] Padrao detectado! Sinal: {$signal}", 'bot');
 
             if (!empty($settings['skipFirstEntry'])) {
                 $this->sfeObserving = true;
@@ -446,7 +557,15 @@ final class BacBoEngine
             }
         }
 
+        $amount = $this->calcBetAmount($settings, $signal);
+        log_msg("[BACBO-DEBUG:{$this->userId}] Valor calculado para aposta: R$ {$amount}", 'bot');
+        if ($amount <= 0) {
+            log_msg("[BACBO-DEBUG:{$this->userId}] Aposta abortada: valor calculado e <= 0", 'bot');
+            return;
+        }
+
         $ok = $this->placeBet($signal, $settings, $vars);
+        log_msg("[BACBO-DEBUG:{$this->userId}] Chamada placeBet finalizada. Retorno: " . ($ok ? 'true' : 'false'), 'bot');
         if ($ok) {
             $this->pendingRealSignal = null;
             if ($fromSfe) {
@@ -459,7 +578,7 @@ final class BacBoEngine
             // Mantém sinal pendente (REAL sem mesa ou falha) — re-tenta no próximo resultado/tick
             $this->pendingRealSignal = $signal;
             if ($fromSfe) {
-                log_msg("[bacbo:{$this->userId}] entrada pendente mantida (*{$signal}*) — re-tentará com janela aberta", 'bot');
+                log_msg("[{$this->gameTypeCode}:{$this->userId}] entrada pendente mantida (*{$signal}*) — re-tentará com janela aberta", 'bot');
             }
         }
     }
@@ -554,15 +673,37 @@ final class BacBoEngine
             }
             $modeTag = 'REAL';
             try {
+                $slug = $this->blazePlaySlug();
+                $proxyRaw = EvolutionBacBo::resolveProxyUrl();
+                $proxyHint = $proxyRaw !== ''
+                    ? (string) preg_replace('/:[^:@\/]+@/', ':***@', $proxyRaw)
+                    : 'nenhum';
+                log_msg(
+                    "[{$this->gameTypeCode}-bet:{$this->userId}] INÍCIO room={$this->room} slug={$slug}"
+                    . " proxy={$proxyHint} signal={$signal} amount=" . number_format($amount, 2, '.', ''),
+                    'bacbo-bet'
+                );
+
                 $launchUrl = null;
                 try {
-                    $play = $this->api->playBacBo('BRL');
+                    $play = $this->api->playBacBo('BRL', $slug);
                     $launchUrl = BlazeAPI::extractBacBoLaunchUrl(is_array($play) ? $play : []);
-                } catch (\Throwable) {
+                    log_msg(
+                        "[{$this->gameTypeCode}-bet:{$this->userId}] Blaze /play slug={$slug}"
+                        . " launch=" . ($launchUrl ? 'ok' : 'vazio')
+                        . " keys=" . (is_array($play) ? implode(',', array_slice(array_keys($play), 0, 8)) : '?'),
+                        'bacbo-bet'
+                    );
+                } catch (\Throwable $ePlay) {
+                    log_msg(
+                        "[{$this->gameTypeCode}-bet:{$this->userId}] Blaze /play EXCEÇÃO: " . $ePlay->getMessage(),
+                        'bacbo-bet'
+                    );
                 }
                 $this->msg(
                     "⏳ *{$signal}* R$ " . number_format($amount, 2, '.', '')
-                    . " — aguardando **janela de apostas aberta** na mesa Evolution…"
+                    . " — [{$this->roomLabel}] abrindo mesa Evolution"
+                    . ($proxyRaw !== '' ? " via proxy…" : " (sem proxy)…")
                 );
                 $res = EvolutionBacBo::placeBet(
                     $this->userId,
@@ -570,25 +711,81 @@ final class BacBoEngine
                     $signal,
                     $amount,
                     $this->currentProtectionAmount,
-                    $launchUrl
+                    $launchUrl,
+                    $slug
+                );
+                $exitIp = (string) ($res['exitIp'] ?? '');
+                log_msg(
+                    "[{$this->gameTypeCode}-bet:{$this->userId}] RESULT {$signal} R$ " . number_format($amount, 2, '.', '')
+                    . ($exitIp !== '' ? " exitIp={$exitIp}" : '')
+                    . ' → ' . json_encode($res, JSON_UNESCAPED_UNICODE),
+                    'bacbo-bet'
                 );
                 if (empty($res['ok'])) {
                     $err = (string) ($res['error'] ?? 'erro desconhecido');
-                    $this->msg(
-                        "❌ Aposta REAL *não* enviada na mesa: {$err}\n"
-                        . "🔁 Mantendo *{$signal}* — no próximo resultado tenta de novo **só com janela aberta**.\n"
-                        . "💡 Feche o Bac Bo no browser (1 sessão por EVOSESSIONID)."
-                    );
+                    $code = (string) ($res['code'] ?? '');
+                    $busy = $code === 'connectionAlreadyExists'
+                        || str_contains($err, 'connectionAlreadyExists')
+                        || str_contains($err, 'já em uso')
+                        || str_contains($err, 'ja em uso');
+                    $akamai = $code === 'AKAMAI_BLOCKED'
+                        || str_contains($err, 'Akamai')
+                        || str_contains($err, 'bloqueou o /entry');
+                    $hopHint = '';
+                    if (!empty($res['hops']) && is_array($res['hops'])) {
+                        $parts = [];
+                        foreach ($res['hops'] as $h) {
+                            if (!is_array($h)) {
+                                continue;
+                            }
+                            $parts[] = ($h['step'] ?? '?') . '=' . ($h['status'] ?? $h['error'] ?? '?');
+                        }
+                        if ($parts) {
+                            $hopHint = "\n🔎 hops: " . implode(' · ', array_slice($parts, 0, 6));
+                        }
+                    }
+                    if ($exitIp !== '') {
+                        $hopHint .= "\n🌐 IP saída: `{$exitIp}`";
+                    }
+                    if ($akamai) {
+                        // Só HTTPS — sem fallback de navegador/Chrome do cliente
+                        $this->msg(
+                            "❌ Akamai bloqueou a sessão REAL [{$this->roomLabel}].\n"
+                            . "💡 Confira o **proxy residencial** (Admin → Proxy) e tente de novo.\n"
+                            . "🔁 Mantendo *{$signal}* — tenta de novo no próximo sinal."
+                            . $hopHint
+                        );
+                        log_msg(
+                            "[{$this->gameTypeCode}-bet:{$this->userId}] AKAMAI_BLOCKED (sem browser fallback)",
+                            'bacbo-bet'
+                        );
+                        return false;
+                    } elseif ($busy) {
+                        $this->msg(
+                            "❌ Sessão Evolution **ocupada** [{$this->roomLabel}].\n"
+                            . "💡 *Feche o Bac Bo no site* e **não** rode `bacbo-ws-feed` com a sessão do bot.\n"
+                            . "🔁 Mantendo *{$signal}* — re-tentando com sessão nova exclusiva…"
+                            . $hopHint
+                        );
+                    } else {
+                        $this->msg(
+                            "❌ Aposta REAL *não* enviada [{$this->roomLabel}]: {$err}\n"
+                            . "📡 proxy: `{$proxyHint}` · code: " . ($code !== '' ? $code : '—') . "\n"
+                            . "🔁 Mantendo *{$signal}* — no próximo resultado tenta de novo."
+                            . $hopHint
+                        );
+                    }
                     return false;
                 }
                 $conf = !empty($res['confirmed']) ? 'confirmada' : 'enviada';
                 $gid = $res['gameId'] ?? '?';
                 $this->msg(
-                    "📡 Aposta REAL {$conf} na mesa " . ($res['tableId'] ?? '?')
+                    "📡 Aposta REAL {$conf} [{$this->roomLabel}] mesa " . ($res['tableId'] ?? '?')
                     . " · game {$gid} · R$ " . number_format($amount, 2, '.', '')
                     . " [janela aberta ✓]"
                 );
             } catch (\Throwable $e) {
+                log_msg("[{$this->gameTypeCode}-bet:{$this->userId}] exceção: " . $e->getMessage(), 'bacbo-bet');
                 $this->msg(
                     '⚠️ Bridge Evolution: ' . $e->getMessage()
                     . "\n🔁 Mantendo *{$signal}* — re-tentando após o próximo resultado (janela aberta)."
@@ -625,6 +822,7 @@ final class BacBoEngine
                 "🎯 Entrando: *{$signal}* — R$ " . number_format($amount, 2, '.', '')
                 . $protText . " | 📋 {$this->currentSignalPattern}{$this->accuracySuffix()} [{$modeTag}]"
             );
+            Notify::notifyUser($this->userId, 'entrada', "Entrando: {$signal} — R$ " . number_format($amount, 2, '.', ''), 'Bac Bo', 'BLAZE');
             $this->logEntry(
                 'ENTRADA',
                 $signal,
@@ -692,7 +890,7 @@ final class BacBoEngine
             $patternMissed = $betColor !== $resultOutcome;
             $profit = $this->handleWin($resultOutcome, $patternMissed);
             $this->cooldownRoundsRemaining = self::COOLDOWN_ROUNDS;
-            $vars = Database::fetch('SELECT * FROM bacbo_variables WHERE ownerId = ?', [$this->userId]);
+            $vars = Database::fetch('SELECT * FROM ' . $this->tbl('variables') . ' WHERE ownerId = ?', [$this->userId]);
             if ($vars) {
                 $this->checkStop(array_merge($vars, ['profit' => $profit]));
             }
@@ -700,7 +898,7 @@ final class BacBoEngine
             $res = $this->handleLoss($resultOutcome);
             if ($res['exhausted']) {
                 $this->cooldownRoundsRemaining = self::COOLDOWN_ROUNDS;
-                $vars = Database::fetch('SELECT * FROM bacbo_variables WHERE ownerId = ?', [$this->userId]);
+                $vars = Database::fetch('SELECT * FROM ' . $this->tbl('variables') . ' WHERE ownerId = ?', [$this->userId]);
                 if ($vars) {
                     $this->checkStop(array_merge($vars, ['profit' => $res['newProfit']]));
                 }
@@ -725,13 +923,13 @@ final class BacBoEngine
             $this->cooldownRoundsRemaining = 0;
             $this->refreshCache();
             $settings = $this->cachedSettings ?? $this->getSettings();
-            $vars = Database::fetch('SELECT * FROM bacbo_variables WHERE ownerId = ?', [$this->userId]);
+            $vars = Database::fetch('SELECT * FROM ' . $this->tbl('variables') . ' WHERE ownerId = ?', [$this->userId]);
             $signal = $this->currentSignalColor !== ''
                 ? $this->currentSignalColor
                 : (string) ($betColor ?? '');
             if ($settings && $vars && $signal !== '') {
                 $this->pendingRealSignal = $signal;
-                log_msg("[bacbo:{$this->userId}] LOSS → gale G{$this->currentGale} {$signal} (espera janela se REAL)", 'bot');
+                log_msg("[{$this->gameTypeCode}:{$this->userId}] LOSS → gale G{$this->currentGale} {$signal} (espera janela se REAL)", 'bot');
                 if (!$this->isDemo) {
                     $this->msg(
                         "📡 *LOSS* registrado — verificando se a janela de apostas está aberta para o gale *{$signal}*…"
@@ -761,10 +959,15 @@ final class BacBoEngine
         $this->sfeColor = '';
 
         $newBalance = $this->simulatedBalance;
-        $vars = Database::fetch('SELECT * FROM bacbo_variables WHERE ownerId = ?', [$this->userId]);
+        $vars = Database::fetch('SELECT * FROM ' . $this->tbl('variables') . ' WHERE ownerId = ?', [$this->userId]);
         $profit = $newBalance - (float) ($vars['firstBalance'] ?? $newBalance);
+        // Lucro da rodada (não o acumulado da sessão) — usado no histórico/relatório mensal
+        $roundProfit = round($newBalance - (float) ($vars['balance'] ?? $newBalance), 2);
+        if (abs($roundProfit) < 0.001) {
+            $roundProfit = $this->currentBetAmount;
+        }
 
-        Database::update('bacbo_variables', [
+        Database::update($this->tbl('variables'), [
             'countWin' => (int) ($vars['countWin'] ?? 0) + 1,
             'monthCountWin' => (int) ($vars['monthCountWin'] ?? 0) + 1,
             'countMartingale' => 0,
@@ -776,7 +979,8 @@ final class BacBoEngine
 
         $this->peakProfit = max($this->peakProfit, $profit);
         $this->msg("✅ *WIN* — {$resultOutcome}\nLucro: R$ " . number_format($profit, 2, '.', '') . "\nBanca atual: R$ " . number_format($newBalance, 2, '.', ''));
-        $this->logEntry('WIN', $this->currentSignalColor, $resultOutcome, $this->currentSignalPattern, $this->currentBetAmount, $profit, (int) ($vars['countMartingale'] ?? 0));
+        Notify::notifyUser($this->userId, 'win', "WIN — {$resultOutcome} | Lucro: R$ " . number_format($profit, 2, '.', ''), 'Bac Bo', 'BLAZE');
+        $this->logEntry('WIN', $this->currentSignalColor, $resultOutcome, $this->currentSignalPattern, $this->currentBetAmount, $roundProfit, (int) ($vars['countMartingale'] ?? 0));
         return $profit;
     }
 
@@ -788,14 +992,19 @@ final class BacBoEngine
         $maxGale = $usesWhiteGale
             ? (int) ($settings['whiteEntryGale'] ?? $settings['martingale'] ?? 1)
             : (int) ($settings['martingale'] ?? 1);
-        $vars = Database::fetch('SELECT * FROM bacbo_variables WHERE ownerId = ?', [$this->userId]);
+        $vars = Database::fetch('SELECT * FROM ' . $this->tbl('variables') . ' WHERE ownerId = ?', [$this->userId]);
         $newMartingale = (int) ($vars['countMartingale'] ?? 0) + 1;
         $newBalance = $this->simulatedBalance;
         $profit = $newBalance - (float) ($vars['firstBalance'] ?? $newBalance);
+        // Lucro da rodada (não o acumulado da sessão) — usado no histórico/relatório mensal
+        $roundProfit = round($newBalance - (float) ($vars['balance'] ?? $newBalance), 2);
+        if (abs($roundProfit) < 0.001) {
+            $roundProfit = -$this->currentBetAmount;
+        }
 
         if ($newMartingale <= $maxGale) {
             $this->currentGale = $newMartingale;
-            Database::update('bacbo_variables', [
+            Database::update($this->tbl('variables'), [
                 'countMartingale' => $newMartingale,
                 'isGale' => 1,
                 'profit' => $profit,
@@ -806,14 +1015,14 @@ final class BacBoEngine
                 . "\nLucro: R$ " . number_format($profit, 2, '.', '')
                 . ($this->isDemo ? '' : "\n⏳ Após o resultado → só aposta se a **janela da mesa** estiver aberta")
             );
-            // Não loga GALE aqui — GALE/ENTRADA só quando a ficha for de fato enviada em placeBet
+            // GALE intermediário — ciclo ainda não finalizado, não conta como LOSS no relatório
             $this->logEntry(
-                'LOSS',
+                'GALE',
                 $this->currentSignalColor,
                 $resultOutcome,
                 $this->currentSignalPattern,
                 $this->currentBetAmount,
-                $profit,
+                $roundProfit,
                 $newMartingale - 1
             );
             return ['exhausted' => false, 'newProfit' => $profit];
@@ -821,7 +1030,7 @@ final class BacBoEngine
 
         $this->cycleCount++;
         $this->currentGale = 0;
-        Database::update('bacbo_variables', [
+        Database::update($this->tbl('variables'), [
             'countLoss' => (int) ($vars['countLoss'] ?? 0) + 1,
             'monthCountLoss' => (int) ($vars['monthCountLoss'] ?? 0) + 1,
             'countMartingale' => 0,
@@ -835,14 +1044,16 @@ final class BacBoEngine
         if ($this->cycleCount < $qty) {
             $this->cycleBaseAmount = $this->currentBetAmount;
             $this->msg("❌ *LOSS* — {$resultOutcome} | Gales esgotados\n🔁 Ciclo " . ($this->cycleCount + 1) . "/{$qty} — nova base: R$ " . number_format($this->cycleBaseAmount, 2, '.', '') . "\nLucro: R$ " . number_format($profit, 2, '.', '') . "\nBanca atual: R$ " . number_format($newBalance, 2, '.', ''));
-            $this->logEntry('LOSS', $this->currentSignalColor, $resultOutcome, $this->currentSignalPattern, $this->currentBetAmount, $profit, $newMartingale);
+            Notify::notifyUser($this->userId, 'loss', "LOSS — {$resultOutcome} | Lucro: R$ " . number_format($profit, 2, '.', ''), 'Bac Bo', 'BLAZE');
+            $this->logEntry('LOSS', $this->currentSignalColor, $resultOutcome, $this->currentSignalPattern, $this->currentBetAmount, $roundProfit, $newMartingale);
             return ['exhausted' => false, 'newProfit' => $profit];
         }
 
         $this->cycleCount = 0;
         $this->cycleBaseAmount = 0;
         $this->msg("❌ *LOSS* — {$resultOutcome} | Gales esgotados\nLucro: R$ " . number_format($profit, 2, '.', '') . "\nBanca atual: R$ " . number_format($newBalance, 2, '.', ''));
-        $this->logEntry('LOSS', $this->currentSignalColor, $resultOutcome, $this->currentSignalPattern, $this->currentBetAmount, $profit, $newMartingale);
+        Notify::notifyUser($this->userId, 'loss', "LOSS — {$resultOutcome} | Lucro: R$ " . number_format($profit, 2, '.', ''), 'Bac Bo', 'BLAZE');
+        $this->logEntry('LOSS', $this->currentSignalColor, $resultOutcome, $this->currentSignalPattern, $this->currentBetAmount, $roundProfit, $newMartingale);
         return ['exhausted' => true, 'newProfit' => $profit];
     }
 
@@ -856,6 +1067,7 @@ final class BacBoEngine
         if (($settings['stopType'] ?? 'VALOR') === 'VALOR') {
             if ($variables['profit'] >= $stopGain && $stopGain > 0) {
                 $this->msg('🏆 *STOP WIN* atingido! Lucro: R$ ' . number_format((float) $variables['profit'], 2, '.', ''));
+                Notify::notifyUser($this->userId, 'stopWin', 'Stop Win atingido — Lucro: R$ ' . number_format((float) $variables['profit'], 2, '.', ''), 'Bac Bo', 'BLAZE');
                 $stopped = true;
             } else {
                 $threshold = $this->peakProfit - $stopLoss;
@@ -864,15 +1076,18 @@ final class BacBoEngine
                         ? 'Proteção ativada! Lucro protegido: R$ ' . number_format($threshold, 2, '.', '')
                         : 'Perda: R$ ' . number_format(abs((float) $variables['profit']), 2, '.', '');
                     $this->msg("🛑 *STOP LOSS* atingido! {$lost}");
+                    Notify::notifyUser($this->userId, 'stopLoss', "Stop Loss atingido! {$lost}", 'Bac Bo', 'BLAZE');
                     $stopped = true;
                 }
             }
         } elseif (($settings['stopType'] ?? '') === 'QUANTIDADE') {
             if ((int) $variables['countWin'] >= $stopGain) {
                 $this->msg('🏆 *STOP WIN* atingido! ' . (int) $variables['countWin'] . ' vitórias');
+                Notify::notifyUser($this->userId, 'stopWin', 'Stop Win atingido — ' . (int) $variables['countWin'] . ' vitórias', 'Bac Bo', 'BLAZE');
                 $stopped = true;
             } elseif ((int) $variables['countLoss'] >= $stopLoss) {
                 $this->msg('🛑 *STOP LOSS* atingido! ' . (int) $variables['countLoss'] . ' derrotas');
+                Notify::notifyUser($this->userId, 'stopLoss', 'Stop Loss atingido — ' . (int) $variables['countLoss'] . ' derrotas', 'Bac Bo', 'BLAZE');
                 $stopped = true;
             }
         }
@@ -917,7 +1132,14 @@ final class BacBoEngine
                 if ($match) {
                     $this->lastMatchedPattern = $strategy['sequence'];
                     $target = strtoupper((string) $strategy['color']);
-                    $acc = PatternAccuracy::computeBacBoWithTimeout($seq, $target, (int) ($settings['martingale'] ?? 0));
+                    $acc = PatternAccuracy::computeBacBoWithTimeout(
+                        $seq,
+                        $target,
+                        (int) ($settings['martingale'] ?? 0),
+                        3000,
+                        7,
+                        $this->tbl('results')
+                    );
                     $this->lastMatchedPatternAccuracy = $acc['pct'] ?? null;
                     return $target;
                 }
@@ -951,8 +1173,288 @@ final class BacBoEngine
             return null;
         }
 
-        // COPIAR SALA DE SINAL depende do listener MTProto (Telegram) — não
-        // portado ainda, mesma lacuna de DoubleEngine/CrashEngine.
+        // COPIAR SALA DE SINAL — consome sinal pendente do poll Telegram
+        if ($type === 'COPIAR SALA DE SINAL') {
+            if ($this->pendingTelegramSignal) {
+                $spot = $this->pendingTelegramSignal;
+                $this->pendingTelegramSignal = null;
+                $this->lastMatchedPattern = 'Telegram';
+                $this->lastMatchedPatternAccuracy = null;
+                return $spot;
+            }
+            return null;
+        }
+
+        return null;
+    }
+
+    // ── Telegram / COPIAR SALA (Bac Bo: PLAYER | BANKER | EMPATE) ──
+
+    private function loadTelegramConfig(): void
+    {
+        $this->tgConfigured = false;
+        $this->tgSession = null;
+        $this->tgGroupId = null;
+        $this->tgKeywords = [];
+        $this->tgSignalKeyword = null;
+        $this->tgSignalKeywordVerified = false;
+
+        $row = Database::fetch(
+            'SELECT session, groupId, keywords, signalKeyword, signalKeywordVerified, isConnected FROM telegram_userbots WHERE ownerId = ?',
+            [$this->userId]
+        );
+        if (!$row || empty($row['isConnected']) || empty($row['session']) || empty($row['groupId'])) {
+            return;
+        }
+
+        $this->tgSession = (string) $row['session'];
+        $this->tgGroupId = (string) $row['groupId'];
+        $this->tgSignalKeyword = !empty($row['signalKeyword']) ? (string) $row['signalKeyword'] : null;
+        $this->tgSignalKeywordVerified = !empty($row['signalKeywordVerified']);
+        if (!empty($row['keywords'])) {
+            $decoded = json_decode((string) $row['keywords'], true);
+            $this->tgKeywords = is_array($decoded) ? array_values(array_map('strval', $decoded)) : [];
+        }
+        $this->tgConfigured = true;
+    }
+
+    private function pollTelegramSignals(): void
+    {
+        if (!$this->tgConfigured || !$this->tgSession || !$this->tgGroupId) {
+            return;
+        }
+
+        $apiId = (int) (ConfigRepository::get('TELEGRAM_API_ID', '0') ?: '0');
+        $apiHash = (string) (ConfigRepository::get('TELEGRAM_API_HASH', '') ?? '');
+        if ($apiId <= 0 || $apiHash === '') {
+            log_msg("[{$this->gameTypeCode}:{$this->userId}] tg: TELEGRAM_API_ID/HASH ausentes no admin", 'bot');
+            return;
+        }
+
+        $result = TelegramBridge::call([
+            'action' => 'poll-messages',
+            'session' => $this->tgSession,
+            'apiId' => $apiId,
+            'apiHash' => $apiHash,
+            'groupId' => $this->tgGroupId,
+            'minId' => $this->lastTgMsgId,
+            'limit' => 10,
+        ]);
+
+        if (empty($result['ok'])) {
+            log_msg("[{$this->gameTypeCode}:{$this->userId}] tg poll error: " . ($result['error'] ?? '?'), 'bot');
+            return;
+        }
+
+        if (isset($result['authorized']) && $result['authorized'] === false) {
+            log_msg("[{$this->gameTypeCode}:{$this->userId}] sessão Telegram inválida — desconectando", 'bot');
+            Database::update('telegram_userbots', ['isConnected' => 0], 'ownerId = :oid', ['oid' => $this->userId]);
+            $this->tgConfigured = false;
+            $this->msg('⚠️ Sessão do Telegram expirada. Reconecte em Estratégias.');
+            return;
+        }
+
+        $messages = $result['messages'] ?? [];
+        if (!is_array($messages)) {
+            return;
+        }
+
+        // Primeira leitura: só ancora o cursor (não processa histórico antigo)
+        if (!$this->tgCursorSeeded) {
+            $maxId = $this->lastTgMsgId;
+            foreach ($messages as $m) {
+                $id = (int) ($m['id'] ?? 0);
+                if ($id > $maxId) {
+                    $maxId = $id;
+                }
+            }
+            if ($maxId === 0) {
+                $all = TelegramBridge::call([
+                    'action' => 'fetch-messages',
+                    'session' => $this->tgSession,
+                    'apiId' => $apiId,
+                    'apiHash' => $apiHash,
+                    'groupId' => $this->tgGroupId,
+                ]);
+                if (!empty($all['ok']) && !empty($all['messages']) && is_array($all['messages'])) {
+                    foreach ($all['messages'] as $m) {
+                        $id = (int) ($m['id'] ?? 0);
+                        if ($id > $maxId) {
+                            $maxId = $id;
+                        }
+                    }
+                }
+            }
+            $this->lastTgMsgId = $maxId;
+            $this->tgCursorSeeded = true;
+            log_msg("[{$this->gameTypeCode}:{$this->userId}] tg cursor seed id={$this->lastTgMsgId}", 'bot');
+            return;
+        }
+
+        foreach ($messages as $m) {
+            $id = (int) ($m['id'] ?? 0);
+            $text = (string) ($m['text'] ?? '');
+            if ($id > $this->lastTgMsgId) {
+                $this->lastTgMsgId = $id;
+            }
+            if ($text === '') {
+                continue;
+            }
+            $this->processTelegramMessage($text);
+        }
+    }
+
+    private function processTelegramMessage(string $msg): void
+    {
+        // Filtro: mensagem-chave tem prioridade; senão keywords
+        if ($this->tgSignalKeyword) {
+            $tpl = preg_replace('/PLAYER|BANKER|EMPATE|TIE|AZUL|VERMELHO|PRETO|BRANCO|🔵|🔴|🟡|⚪|⚫|⬛/iu', '', $this->tgSignalKeyword) ?? '';
+            $tpl = preg_replace('/\s+/', ' ', trim($tpl)) ?? '';
+            if ($tpl !== '' && mb_stripos($msg, $tpl) === false) {
+                return;
+            }
+        } elseif ($this->tgKeywords) {
+            $hit = false;
+            $low = mb_strtolower($msg);
+            foreach ($this->tgKeywords as $kw) {
+                if ($kw !== '' && str_contains($low, mb_strtolower((string) $kw))) {
+                    $hit = true;
+                    break;
+                }
+            }
+            if (!$hit) {
+                return;
+            }
+        }
+
+        $spot = null;
+        if ($this->tgSignalKeyword) {
+            $spot = $this->extractBacBoFromSignalKeyword($this->tgSignalKeyword, $msg)
+                ?? $this->extractBacBoFromMessage($msg);
+        } else {
+            $spot = $this->extractBacBoFromMessage($msg);
+        }
+
+        if (!$spot) {
+            return;
+        }
+
+        // Calibração da mensagem-chave (1ª detecção não aposta)
+        if ($this->tgSignalKeyword && !$this->tgSignalKeywordVerified) {
+            $this->tgSignalKeywordVerified = true;
+            try {
+                Database::update(
+                    'telegram_userbots',
+                    ['signalKeywordVerified' => 1],
+                    'ownerId = :oid',
+                    ['oid' => $this->userId]
+                );
+            } catch (\Throwable) {
+            }
+            $this->msg(
+                "⚙️ *Calibração da Mensagem-Chave*\n"
+                . "✅ Lado detectado: *{$spot}*\n\n"
+                . "Mensagem-chave validada! A próxima entrada será realizada normalmente."
+            );
+            log_msg("[{$this->gameTypeCode}:{$this->userId}] tg calibração OK spot={$spot}", 'bot');
+            return;
+        }
+
+        // Se já tem aposta em voo, ignora novo sinal (não empilha)
+        if ($this->betInFlight) {
+            log_msg("[{$this->gameTypeCode}:{$this->userId}] tg sinal {$spot} ignorado — aposta em andamento", 'bot');
+            return;
+        }
+
+        $this->pendingTelegramSignal = $spot;
+        log_msg("[{$this->gameTypeCode}:{$this->userId}] tg SINAL PENDENTE: {$spot} | " . mb_substr($msg, 0, 100), 'bot');
+        $this->msg("📡 Sinal Telegram capturado: *{$spot}* — entrando quando a mesa abrir apostas…");
+    }
+
+    private function extractBacBoFromSignalKeyword(string $keyword, string $msg): ?string
+    {
+        $template = preg_replace('/PLAYER|BANKER|EMPATE|TIE|AZUL|VERMELHO|PRETO|BRANCO|🔵|🔴|🟡|⚪|⚫|⬛/iu', '', $keyword) ?? '';
+        $template = preg_replace('/\s+/', ' ', trim($template)) ?? '';
+        if (mb_strlen($template) < 2) {
+            return null;
+        }
+        $tplLow = mb_strtolower($template);
+        foreach (preg_split('/\r\n|\n|\r/', $msg) ?: [] as $line) {
+            if (!str_contains(mb_strtolower($line), $tplLow)) {
+                continue;
+            }
+            $c = $this->pickBacBoSpot($line);
+            if ($c) {
+                return $c;
+            }
+        }
+        return null;
+    }
+
+    private function extractBacBoFromMessage(string $msg): ?string
+    {
+        $text = mb_strtoupper($msg);
+        $entryRe = '/ENTRADA|ENTRAR|APOSTAR|APOSTE|APOSTA|SINAL|SIGNAL|BET|JOGAR|JOGUE|COMPRA|COMPRE|CONFIRMA|CONFIRMADO|PREVISÃO|PREVISAO|BAC\s*BO|BACBO/u';
+
+        if (!preg_match($entryRe, $text) && !$this->tgKeywords && !$this->tgSignalKeyword) {
+            // sem palavra de entrada e sem filtro de grupo → exige palavra-chave
+            return null;
+        }
+
+        // Linha com ENTRADA + lado
+        foreach (preg_split('/\r\n|\n|\r/', $msg) ?: [] as $line) {
+            $up = mb_strtoupper($line);
+            if (!preg_match($entryRe, $up) && !preg_match('/PLAYER|BANKER|EMPATE|TIE|🔵|🔴|🟡/u', $line)) {
+                continue;
+            }
+            $c = $this->pickBacBoSpot($line);
+            if ($c) {
+                return $c;
+            }
+        }
+
+        // Fallback: qualquer menção clara no texto inteiro
+        return $this->pickBacBoSpot($msg);
+    }
+
+    private function pickBacBoSpot(string $s): ?string
+    {
+        $t = mb_strtoupper($s);
+        // EMPATE antes de BANKER/PLAYER genéricos
+        if (
+            str_contains($t, 'EMPATE')
+            || str_contains($t, 'TIE')
+            || str_contains($s, '🟡')
+            || (str_contains($s, '⚪') && (str_contains($t, 'EMPATE') || str_contains($t, 'TIE') || str_contains($t, 'PROTEGER')))
+        ) {
+            return 'EMPATE';
+        }
+        if (
+            str_contains($t, 'PLAYER')
+            || str_contains($t, 'AZUL')
+            || str_contains($s, '🔵')
+            || preg_match('/\bP\b/', $t)
+        ) {
+            // evita confundir "P" sozinho em palavras — só se tiver contexto de entrada
+            if (str_contains($t, 'PLAYER') || str_contains($t, 'AZUL') || str_contains($s, '🔵')) {
+                return 'PLAYER';
+            }
+        }
+        if (
+            str_contains($t, 'BANKER')
+            || str_contains($t, 'BANK')
+            || str_contains($t, 'VERMELHO')
+            || str_contains($s, '🔴')
+        ) {
+            return 'BANKER';
+        }
+        // Linhas curtas tipo "🔵 PLAYER" já cobertas; "Apostar no P"
+        if (preg_match('/(?:ENTRADA|APOSTAR|SINAL|BET).{0,30}?\bP(?:LAYER)?\b/u', $t)) {
+            return 'PLAYER';
+        }
+        if (preg_match('/(?:ENTRADA|APOSTAR|SINAL|BET).{0,30}?\bB(?:ANKER)?\b/u', $t)) {
+            return 'BANKER';
+        }
         return null;
     }
 
@@ -983,7 +1485,7 @@ final class BacBoEngine
 
     private function initVariables(): void
     {
-        $existing = Database::fetch('SELECT * FROM bacbo_variables WHERE ownerId = ?', [$this->userId]);
+        $existing = Database::fetch('SELECT * FROM ' . $this->tbl('variables') . ' WHERE ownerId = ?', [$this->userId]);
         if ($existing) {
             $this->simulatedBalance = (float) $existing['balance'];
         }
@@ -1048,11 +1550,11 @@ final class BacBoEngine
                 $data['monthCountWin'] = 0;
                 $data['monthCountLoss'] = 0;
             }
-            Database::update('bacbo_variables', $data, 'ownerId = :oid', ['oid' => $this->userId]);
+            Database::update($this->tbl('variables'), $data, 'ownerId = :oid', ['oid' => $this->userId]);
         } else {
             $start = $this->isDemo ? 1000.0 : max(0.0, $balance);
             $this->simulatedBalance = $start;
-            Database::insert('bacbo_variables', [
+            Database::insert($this->tbl('variables'), [
                 'ownerId' => $this->userId,
                 'balance' => $start,
                 'firstBalance' => $start,
@@ -1082,7 +1584,7 @@ final class BacBoEngine
         ?int $gale = null
     ): void {
         try {
-            Database::insert('bacbo_bot_entries', [
+            Database::insert($this->tbl('bot_entries'), [
                 'type' => $type,
                 'signalColor' => $signal,
                 'resultColor' => $result,
@@ -1099,14 +1601,15 @@ final class BacBoEngine
         \App\Bot\BotEntryLogger::log(
             $this->userId,
             $type,
-            'BACBO',
+            $this->gameTypeCode,
             'BLAZE',
             $signal,
             $result,
             $pattern,
             $bet,
             $profit,
-            $gale
+            $gale,
+            $this->isDemo ? 'DEMO' : 'REAL'
         );
     }
 }

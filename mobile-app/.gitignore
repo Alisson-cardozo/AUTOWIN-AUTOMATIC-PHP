@@ -1,0 +1,5 @@
+# Dependências (reinstala com npm install)
+node_modules/
+
+# Build outputs
+dist/

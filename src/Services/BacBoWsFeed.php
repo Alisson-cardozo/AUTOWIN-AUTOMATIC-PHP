@@ -66,10 +66,21 @@ final class BacBoWsFeed
         $log = storage_path('logs/bacbo-ws-feed.log');
 
         if (PHP_OS_FAMILY === 'Windows') {
+            if (!function_exists('popen')) {
+                log_msg('[bacbo-ws-feed] popen() indisponível — rode o feed via bot/server.cjs', 'bot');
+                return;
+            }
             $cmd = 'start /B "" ' . escapeshellarg($node) . ' ' . escapeshellarg($script)
                 . ' >> ' . escapeshellarg($log) . ' 2>&1';
             pclose(popen($cmd, 'r'));
         } else {
+            if (!function_exists('exec')) {
+                // Hospedagem compartilhada: exec() desabilitado. O feed deve rodar dentro
+                // do processo persistente bot/server.cjs (deploy separado, ex. Node App
+                // do hPanel) — ele já grava no mesmo storage/bacbo-ws/history.json.
+                log_msg('[bacbo-ws-feed] exec() indisponível — rode o feed via bot/server.cjs', 'bot');
+                return;
+            }
             $cmd = escapeshellarg($node) . ' ' . escapeshellarg($script)
                 . ' >> ' . escapeshellarg($log) . ' 2>&1 & echo $!';
             $out = [];

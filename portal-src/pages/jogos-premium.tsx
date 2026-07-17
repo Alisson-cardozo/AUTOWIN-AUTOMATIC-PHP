@@ -1,18 +1,31 @@
 import Link from "next/link"
+import { useEffect, useState } from "react"
 
 const PREMIUM_GAMES = [
   {
     id: "bacbo",
-    title: "Bac Bo Ao Vivo",
-    description: "Análise avançada de padrões e tendências da mesa de Bac Bo.",
+    title: "Bac Bo",
+    description: "Análise avançada de padrões e tendências da mesa Bac Bo (sala normal).",
     icon: "🎲",
     href: "/premium-bacbo",
-    // Mesma arte da aba Conta Blaze
     image: "/imagem-jogos/blaze/bacbo.png" as string | null,
     color: "from-blue-600/20 to-blue-900/40",
     border: "border-blue-500/30",
     hoverBorder: "hover:border-blue-400",
     overlay: "from-blue-950/90 via-blue-950/55 to-transparent",
+    status: "Ativo",
+  },
+  {
+    id: "bacbo-live",
+    title: "Bac Bo Ao Vivo",
+    description: "Padrões e tendências da mesa Bac Bo Ao Vivo (histórico TipMiner separado).",
+    icon: "🔥",
+    href: "/premium-bacbo-live",
+    image: "/imagem-jogos/blaze/bac_bo_ao_vivo.png" as string | null,
+    color: "from-rose-600/20 to-rose-900/40",
+    border: "border-rose-500/30",
+    hoverBorder: "hover:border-rose-400",
+    overlay: "from-rose-950/90 via-rose-950/55 to-transparent",
     status: "Ativo",
   },
   {
@@ -30,11 +43,11 @@ const PREMIUM_GAMES = [
   },
   {
     id: "roletas",
-    title: "Roletas Ao Vivo",
-    description: "Monitoramento de terminais e mapeamento de zonas quentes e frias.",
+    title: "Mega Roulette - Brazilian",
+    description: "Resultados ao vivo da Mega Roulette - Brazilian (Pragmatic) na Blaze.",
     icon: "🎰",
     href: "/premium-roletas",
-    image: null as string | null,
+    image: "/imagem-jogos/blaze/mega_roleta.png" as string | null,
     color: "from-purple-600/20 to-purple-900/40",
     border: "border-purple-500/30",
     hoverBorder: "hover:border-purple-400",
@@ -44,6 +57,20 @@ const PREMIUM_GAMES = [
 ]
 
 export default function JogosPremiumHub() {
+  const [hiddenLiveGames, setHiddenLiveGames] = useState<string[]>([])
+
+  useEffect(() => {
+    fetch("/api/user/me")
+      .then((r) => r.json())
+      .then((data) => {
+        const hidden = (data.hiddenLiveGames ?? "").split(",").map((g: string) => g.trim()).filter(Boolean)
+        setHiddenLiveGames(hidden)
+      })
+      .catch(() => {})
+  }, [])
+
+  const visibleGames = PREMIUM_GAMES.filter((game) => !hiddenLiveGames.includes(game.id))
+
   return (
     <div className="max-w-5xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
       <div className="flex flex-col items-center justify-center text-center space-y-3 py-6">
@@ -56,7 +83,7 @@ export default function JogosPremiumHub() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {PREMIUM_GAMES.map((game) => (
+        {visibleGames.map((game) => (
           <Link
             key={game.id}
             href={game.href}

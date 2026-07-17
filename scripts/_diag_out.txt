@@ -1,0 +1,146 @@
+ENTRIES=[{"id":10,"type":"ENTRADA","asset":"GBPUSD-OTC","direction":"CALL","amount":2,"result":null,"profit":null,"externalId":"14078345639","expiration":3,"createdAt":"2026-07-16 01:12:42"},{"id":9,"type":"ENTRADA","asset":"GBPUSD-OTC","direction":"PUT","amount":2,"result":null,"profit":null,"externalId":"14078330217","expiration":5,"createdAt":"2026-07-16 01:05:42"},{"id":8,"type":"ENTRADA","asset":"EURUSD-OTC","direction":"PUT","amount":2,"result":null,"profit":null,"externalId":"14078319661","expiration":3,"createdAt":"2026-07-16 01:00:36"},{"id":7,"type":"ENTRADA","asset":"USDJPY-OTC","direction":"PUT","amount":2,"result":null,"profit":null,"externalId":null,"expiration":3,"createdAt":"2026-07-16 00:55:18"},{"id":6,"type":"ENTRADA","asset":"GBPUSD-OTC","direction":"PUT","amount":2,"result":null,"profit":null,"externalId":null,"expiration":5,"createdAt":"2026-07-16 00:46:06"}]
+=== bridge log ===
+[2026-07-16T00:43:14.689Z] candles ok active=81 size=60 n=120
+[2026-07-16T00:43:16.353Z] candles ok active=85 size=60 n=120
+[2026-07-16T00:43:49.447Z] get-balances ssid_len=32
+[2026-07-16T00:43:50.550Z] balances WS ok n=4 source=balances
+[2026-07-16T00:43:51.525Z] get-balances ssid_len=32
+[2026-07-16T00:43:52.658Z] balances WS ok n=4 source=balances
+[2026-07-16T00:43:54.741Z] candles ok active=76 size=60 n=120
+[2026-07-16T00:43:56.335Z] candles ok active=81 size=60 n=120
+[2026-07-16T00:43:57.887Z] candles ok active=85 size=60 n=120
+[2026-07-16T00:46:00.131Z] candles ok active=76 size=60 n=30
+[2026-07-16T00:46:04.926Z] candles ok active=81 size=60 n=120
+[2026-07-16T00:46:05.205Z] place-option asset=GBPUSD-OTC active=81 put $2 exp=1784163120
+[2026-07-16T00:53:30.840Z] get-balances ssid_len=32
+[2026-07-16T00:53:31.949Z] balances WS ok n=4 source=balances
+[2026-07-16T00:53:34.352Z] candles ok active=85 size=60 n=120
+[2026-07-16T00:53:35.911Z] candles ok active=76 size=60 n=120
+[2026-07-16T00:53:37.467Z] candles ok active=81 size=60 n=120
+[2026-07-16T00:53:47.338Z] candles ok active=85 size=60 n=120
+[2026-07-16T00:53:48.862Z] candles ok active=76 size=60 n=120
+[2026-07-16T00:53:50.401Z] candles ok active=81 size=60 n=120
+[2026-07-16T00:54:00.312Z] candles ok active=85 size=60 n=120
+[2026-07-16T00:54:01.860Z] candles ok active=76 size=60 n=120
+[2026-07-16T00:54:03.432Z] candles ok active=81 size=60 n=120
+[2026-07-16T00:54:13.316Z] candles ok active=85 size=60 n=120
+[2026-07-16T00:54:14.950Z] candles ok active=76 size=60 n=120
+[2026-07-16T00:54:16.534Z] candles ok active=81 size=60 n=120
+[2026-07-16T00:54:25.415Z] candles ok active=85 size=60 n=120
+[2026-07-16T00:54:27.031Z] candles ok active=76 size=60 n=120
+[2026-07-16T00:54:28.610Z] candles ok active=81 size=60 n=120
+[2026-07-16T00:54:37.480Z] candles ok active=85 size=60 n=120
+[2026-07-16T00:54:39.043Z] candles ok active=76 size=60 n=120
+[2026-07-16T00:54:40.649Z] candles ok active=81 size=60 n=120
+[2026-07-16T00:54:49.492Z] candles ok active=85 size=60 n=120
+[2026-07-16T00:54:51.009Z] candles ok active=76 size=60 n=120
+[2026-07-16T00:54:52.551Z] candles ok active=81 size=60 n=120
+[2026-07-16T00:55:01.426Z] candles ok active=85 size=60 n=120
+[2026-07-16T00:55:02.977Z] candles ok active=76 size=60 n=120
+[2026-07-16T00:55:04.521Z] candles ok active=81 size=60 n=120
+[2026-07-16T00:55:13.333Z] candles ok active=85 size=60 n=120
+[2026-07-16T00:55:14.880Z] candles ok active=76 size=60 n=120
+[2026-07-16T00:55:16.400Z] candles ok active=81 size=60 n=120
+[2026-07-16T00:55:16.689Z] place-option asset=USDJPY-OTC active=85 put $2 exp=1784163540
+[2026-07-16T00:58:26.706Z] get-balances ssid_len=32
+[2026-07-16T00:58:27.760Z] balances WS ok n=4 source=balances
+[2026-07-16T01:00:30.739Z] get-balances ssid_len=32
+[2026-07-16T01:00:31.815Z] balances WS ok n=4 source=balances
+[2026-07-16T01:00:34.338Z] candles ok active=76 size=60 n=120
+[2026-07-16T01:00:34.649Z] place-option asset=EURUSD-OTC active=76 put $2 exp=1784163840
+[2026-07-16T01:05:33.647Z] get-balances ssid_len=32
+[2026-07-16T01:05:34.766Z] balances WS ok n=4 source=balances
+[2026-07-16T01:05:37.171Z] candles ok active=81 size=60 n=120
+[2026-07-16T01:05:38.704Z] candles ok active=85 size=60 n=120
+[2026-07-16T01:05:40.345Z] candles ok active=76 size=60 n=120
+[2026-07-16T01:05:40.650Z] place-option asset=GBPUSD-OTC active=81 put $2 exp=1784164260
+[2026-07-16T01:12:33.982Z] get-balances ssid_len=32
+[2026-07-16T01:12:35.114Z] balances WS ok n=4 source=balances
+[2026-07-16T01:12:37.465Z] candles ok active=85 size=60 n=120
+[2026-07-16T01:12:39.047Z] candles ok active=76 size=60 n=120
+[2026-07-16T01:12:40.662Z] candles ok active=81 size=60 n=120
+[2026-07-16T01:12:40.955Z] place-option asset=GBPUSD-OTC active=81 call $2 exp=1784164560
+=== daytrade log ===
+[2026-07-15 21:33:53] [daytrade:1] 💰 Banca: 7.26 · lucro/wins/loss zerados
+[2026-07-15 21:33:53] [daytrade:1] 💰 Sessão reiniciada — vitórias/derrotas do painel zeradas (relatório do mês mantido)
+[2026-07-15 21:33:55] [daytrade:1] 🟢 Bot Day Trade (IQ Option) iniciado [REAL] · 1 ciclo(s) · 10 estratégia(s) · 18 ativo(s) · entrada após loss ON
+[2026-07-15 21:33:55] [daytrade:1] ⏭️ Entrada após loss: simula a sequência de gale antes de entrar de verdade.
+[2026-07-15 21:33:55] [daytrade:1] 💰 Banca: 7.26 · lucro/wins/loss zerados
+[2026-07-15 21:33:58] [daytrade:1] 🔍 Sinal CALL · Suporte e Resistência + Velas · GBPUSD-OTC
+⏳ Entrada após loss: simulando sequência de gale (0/1)…
+[2026-07-15 21:37:00] [daytrade:1] 🔍 Observação: gale virtual 1/1 · CALL GBPUSD-OTC
+[2026-07-15 21:40:02] [daytrade:1] ✅ Observação: CALL GBPUSD-OTC teria ganho — resetando (sem aposta).
+[2026-07-15 21:40:08] [daytrade:1] 🔍 Sinal PUT · Notícias + Suporte/Resistência · EURUSD-OTC
+⏳ Entrada após loss: simulando sequência de gale (0/1)…
+[2026-07-15 21:43:10] [daytrade:1] ✅ Observação: PUT EURUSD-OTC teria ganho — resetando (sem aposta).
+[2026-07-15 21:43:16] [daytrade:1] 🔍 Sinal PUT · Tendência (Trend Following) · GBPUSD-OTC
+⏳ Entrada após loss: simulando sequência de gale (0/1)…
+[2026-07-15 21:43:51] [daytrade:1] 💰 Sessão reiniciada — vitórias/derrotas do painel zeradas (relatório do mês mantido)
+[2026-07-15 21:43:51] [daytrade:1] 🟢 Bot Day Trade (IQ Option) iniciado [REAL] · 1 ciclo(s) · 10 estratégia(s) · 18 ativo(s) · pular 1ª ON
+[2026-07-15 21:43:51] [daytrade:1] ⏭️ Pular 1ª entrada: a 1ª oportunidade será só observação (sem aposta).
+[2026-07-15 21:43:51] [daytrade:1] 💰 Banca: 7.26 · lucro/wins/loss zerados
+[2026-07-15 21:43:51] [daytrade:1] 💰 Sessão reiniciada — vitórias/derrotas do painel zeradas (relatório do mês mantido)
+[2026-07-15 21:43:53] [daytrade:1] 🟢 Bot Day Trade (IQ Option) iniciado [REAL] · 1 ciclo(s) · 10 estratégia(s) · 18 ativo(s) · pular 1ª ON
+[2026-07-15 21:43:53] [daytrade:1] ⏭️ Pular 1ª entrada: a 1ª oportunidade será só observação (sem aposta).
+[2026-07-15 21:43:53] [daytrade:1] 💰 Banca: 7.26 · lucro/wins/loss zerados
+[2026-07-15 21:43:58] [daytrade:1] 🔍 Sinal CALL · Padrões de Velas (T5) · EURUSD-OTC
+⏳ Pular 1ª entrada — observando sem apostar…
+[2026-07-15 21:46:00] [daytrade:1] ✅ Observação: CALL EURUSD-OTC teria ganho — resetando (sem aposta).
+[2026-07-15 21:46:05] [daytrade:1] ⏳ Entrando PUT GBPUSD-OTC · R$ 2.00 · 5m | 📋 Tendência (Trend Following) · TREND_ADX
+[2026-07-15 21:46:06] [daytrade:1] ✅ Ordem enviada: PUT GBPUSD-OTC · $2.00
+[2026-07-15 21:53:30] [daytrade:1] ⏱️ Sem resultado automático da IQ — confira no app. Liberando bot.
+[2026-07-15 21:55:16] [daytrade:1] ⏳ Entrando PUT USDJPY-OTC · R$ 2.00 · 3m | 📋 Suporte e Resistência + Velas · SUPPORT_RES
+[2026-07-15 21:55:18] [daytrade:1] ✅ Ordem enviada: PUT USDJPY-OTC · $2.00
+[2026-07-15 22:00:30] [daytrade:1] ⏱️ Sem resultado automático da IQ — confira no app. Liberando bot.
+[2026-07-15 22:00:34] [daytrade:1] ⏳ Entrando PUT EURUSD-OTC · R$ 2.00 · 3m | 📋 Cruzamento de Médias (SMA 8/21) · SMA_CROSS
+[2026-07-15 22:00:36] [daytrade:1] ✅ Ordem enviada: PUT EURUSD-OTC · $2.00 · id=14078319661
+[2026-07-15 22:05:33] [daytrade:1] ⏱️ Sem resultado automático da IQ — confira no app. Liberando bot.
+[2026-07-15 22:05:40] [daytrade:1] ⏳ Entrando PUT GBPUSD-OTC · R$ 2.00 · 5m | 📋 Tendência (Trend Following) · TREND_ADX
+[2026-07-15 22:05:42] [daytrade:1] ✅ Ordem enviada: PUT GBPUSD-OTC · $2.00 · id=14078330217
+[2026-07-15 22:12:33] [daytrade:1] ⏱️ Sem resultado automático da IQ — confira no app. Liberando bot.
+[2026-07-15 22:12:40] [daytrade:1] ⏳ Entrando CALL GBPUSD-OTC · R$ 2.00 · 3m | 📋 Suporte e Resistência + Velas · SUPPORT_RES
+[2026-07-15 22:12:42] [daytrade:1] ✅ Ordem enviada: CALL GBPUSD-OTC · $2.00 · id=14078345639
+[2026-07-15 22:13:21] [daytrade:1] ⏸️ Entrada em andamento — paro após o resultado.
+=== iqoption log ===
+[2026-07-15 21:54:00] [iq-bridge] [iqoption] candles ok active=85 size=60 n=120
+[2026-07-15 21:54:02] [iq-bridge] [iqoption] candles ok active=76 size=60 n=120
+[2026-07-15 21:54:03] [iq-bridge] [iqoption] candles ok active=81 size=60 n=120
+[2026-07-15 21:54:13] [iq-bridge] [iqoption] candles ok active=85 size=60 n=120
+[2026-07-15 21:54:15] [iq-bridge] [iqoption] candles ok active=76 size=60 n=120
+[2026-07-15 21:54:16] [iq-bridge] [iqoption] candles ok active=81 size=60 n=120
+[2026-07-15 21:54:25] [iq-bridge] [iqoption] candles ok active=85 size=60 n=120
+[2026-07-15 21:54:27] [iq-bridge] [iqoption] candles ok active=76 size=60 n=120
+[2026-07-15 21:54:28] [iq-bridge] [iqoption] candles ok active=81 size=60 n=120
+[2026-07-15 21:54:37] [iq-bridge] [iqoption] candles ok active=85 size=60 n=120
+[2026-07-15 21:54:39] [iq-bridge] [iqoption] candles ok active=76 size=60 n=120
+[2026-07-15 21:54:40] [iq-bridge] [iqoption] candles ok active=81 size=60 n=120
+[2026-07-15 21:54:49] [iq-bridge] [iqoption] candles ok active=85 size=60 n=120
+[2026-07-15 21:54:51] [iq-bridge] [iqoption] candles ok active=76 size=60 n=120
+[2026-07-15 21:54:52] [iq-bridge] [iqoption] candles ok active=81 size=60 n=120
+[2026-07-15 21:55:01] [iq-bridge] [iqoption] candles ok active=85 size=60 n=120
+[2026-07-15 21:55:03] [iq-bridge] [iqoption] candles ok active=76 size=60 n=120
+[2026-07-15 21:55:04] [iq-bridge] [iqoption] candles ok active=81 size=60 n=120
+[2026-07-15 21:55:13] [iq-bridge] [iqoption] candles ok active=85 size=60 n=120
+[2026-07-15 21:55:15] [iq-bridge] [iqoption] candles ok active=76 size=60 n=120
+[2026-07-15 21:55:16] [iq-bridge] [iqoption] candles ok active=81 size=60 n=120
+[2026-07-15 21:55:18] [iq-bridge] [iqoption] place-option asset=USDJPY-OTC active=85 put $2 exp=1784163540
+[2026-07-15 21:58:28] [iq-bridge] [iqoption] get-balances ssid_len=32
+[2026-07-15 21:58:28] [iq-bridge] [iqoption] balances WS ok n=4 source=balances
+[2026-07-15 22:00:32] [iq-bridge] [iqoption] get-balances ssid_len=32
+[2026-07-15 22:00:32] [iq-bridge] [iqoption] balances WS ok n=4 source=balances
+[2026-07-15 22:00:34] [iq-bridge] [iqoption] candles ok active=76 size=60 n=120
+[2026-07-15 22:00:36] [iq-bridge] [iqoption] place-option asset=EURUSD-OTC active=76 put $2 exp=1784163840
+[2026-07-15 22:05:35] [iq-bridge] [iqoption] get-balances ssid_len=32
+[2026-07-15 22:05:35] [iq-bridge] [iqoption] balances WS ok n=4 source=balances
+[2026-07-15 22:05:37] [iq-bridge] [iqoption] candles ok active=81 size=60 n=120
+[2026-07-15 22:05:38] [iq-bridge] [iqoption] candles ok active=85 size=60 n=120
+[2026-07-15 22:05:40] [iq-bridge] [iqoption] candles ok active=76 size=60 n=120
+[2026-07-15 22:05:42] [iq-bridge] [iqoption] place-option asset=GBPUSD-OTC active=81 put $2 exp=1784164260
+[2026-07-15 22:12:35] [iq-bridge] [iqoption] get-balances ssid_len=32
+[2026-07-15 22:12:35] [iq-bridge] [iqoption] balances WS ok n=4 source=balances
+[2026-07-15 22:12:37] [iq-bridge] [iqoption] candles ok active=85 size=60 n=120
+[2026-07-15 22:12:39] [iq-bridge] [iqoption] candles ok active=76 size=60 n=120
+[2026-07-15 22:12:40] [iq-bridge] [iqoption] candles ok active=81 size=60 n=120
+[2026-07-15 22:12:42] [iq-bridge] [iqoption] place-option asset=GBPUSD-OTC active=81 call $2 exp=1784164560
+
+ERR

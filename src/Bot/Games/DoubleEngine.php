@@ -12,6 +12,7 @@ use App\Database;
 use App\Models\ConfigRepository;
 use App\Models\UserRepository;
 use App\Services\BotCommandService;
+use App\Services\Notify;
 use App\Services\TelegramBridge;
 
 /**
@@ -459,6 +460,13 @@ final class DoubleEngine
                 $this->msg("🔄 Gale {$galeNum}/{$maxGale}: *{$this->displayColor($signal)}* — R$ " . number_format($amount, 2, '.', '') . $protText . " | 📋 {$this->lastMatchedPattern}");
             } else {
                 $this->msg("🎯 Entrando: *{$this->displayColor($signal)}* — R$ " . number_format($amount, 2, '.', '') . $protText . " | 📋 {$this->lastMatchedPattern}");
+                Notify::notifyUser(
+                    $this->userId,
+                    'entrada',
+                    "Entrando: {$this->displayColor($signal)} — R$ " . number_format($amount, 2, '.', ''),
+                    'Double',
+                    $this->platform
+                );
             }
         } catch (\Throwable $e) {
             $this->betInFlight = false;
@@ -622,10 +630,19 @@ final class DoubleEngine
         ], 'ownerId = :oid', ['oid' => $this->userId]);
         $this->peakProfit = max($this->peakProfit, $profit);
         $this->msg("✅ *WIN* — {$this->displayColor($resultColor)}\nLucro: R$ " . number_format($profit, 2, '.', '') . "\nBanca: R$ " . number_format($newBalance, 2, '.', ''));
-        // Lucro da rodada (não o acumulado da sessão) — relatório mensal
-        $roundProfit = round($newBalance - (float) ($vars['balance'] ?? $newBalance), 2);
-        if (abs($roundProfit) < 0.001) {
-            $roundProfit = $this->currentBetAmount; // fallback 1:1
+        Notify::notifyUser($this->userId, 'win', "WIN — {$this->displayColor($resultColor)} | Lucro: R$ " . number_format($profit, 2, '.', ''), 'Double', $this->platform);
+        // Lucro da rodada (não o acumulado da sessão) — relatório mensal.
+        // Calculado pela regra de pagamento (2x cor / 14x branco), não por
+        // diferença de saldo real — o saldo da corretora pode demorar a
+        // refletir a rodada e isso já causou lucro em dobro no relatório.
+        $pv = $this->currentProtectionAmount;
+        $betColor = $this->currentSignalColor;
+        if ($resultColor === 'BRANCO' && $betColor !== 'BRANCO') {
+            $roundProfit = round($pv * 13 - $this->currentBetAmount, 2);
+        } elseif ($resultColor === 'BRANCO' && $betColor === 'BRANCO') {
+            $roundProfit = round($this->currentBetAmount * 13, 2);
+        } else {
+            $roundProfit = round($this->currentBetAmount - $pv, 2);
         }
         $this->logEntry('WIN', $this->currentSignalColor, $resultColor, $this->currentSignalPattern, $this->currentBetAmount, $roundProfit, (int) $vars['countMartingale']);
         return $profit;
@@ -647,10 +664,7 @@ final class DoubleEngine
                 'profit' => $profit,
                 'balance' => $newBalance,
             ], 'ownerId = :oid', ['oid' => $this->userId]);
-            $roundProfit = round($newBalance - (float) ($vars['balance'] ?? $newBalance), 2);
-            if (abs($roundProfit) < 0.001) {
-                $roundProfit = -$this->currentBetAmount;
-            }
+            $roundProfit = round(-($this->currentBetAmount + $this->currentProtectionAmount), 2);
             $this->msg("❌ *LOSS* — {$this->displayColor($resultColor)} | Gale {$newMartingale}/{$maxGale}\nLucro: R$ " . number_format($profit, 2, '.', ''));
             $this->logEntry('GALE', $this->currentSignalColor, $resultColor, $this->currentSignalPattern, $this->currentBetAmount, $roundProfit, $newMartingale);
             return ['exhausted' => false, 'newProfit' => $profit];
@@ -669,22 +683,21 @@ final class DoubleEngine
             'balance' => $newBalance,
         ], 'ownerId = :oid', ['oid' => $this->userId]);
 
-        $roundProfit = round($newBalance - (float) ($vars['balance'] ?? $newBalance), 2);
-        if (abs($roundProfit) < 0.001) {
-            $roundProfit = -$this->currentBetAmount;
-        }
+        $roundProfit = round(-($this->currentBetAmount + $this->currentProtectionAmount), 2);
 
         $qty = (int) ($settings['quantityCycles'] ?? 1);
         if ($this->cycleCount < $qty) {
             $this->cycleBaseAmount = $this->currentBetAmount;
             $this->msg("❌ *LOSS* — gales esgotados · ciclo " . ($this->cycleCount + 1) . "/{$qty}");
             $this->logEntry('LOSS', $this->currentSignalColor, $resultColor, $this->currentSignalPattern, $this->currentBetAmount, $roundProfit, $newMartingale);
+            Notify::notifyUser($this->userId, 'loss', "LOSS — {$this->displayColor($resultColor)} | Lucro: R$ " . number_format($profit, 2, '.', ''), 'Double', $this->platform);
             return ['exhausted' => false, 'newProfit' => $profit];
         }
         $this->cycleCount = 0;
         $this->cycleBaseAmount = 0;
         $this->msg("❌ *LOSS* — {$this->displayColor($resultColor)} | Gales esgotados\nLucro: R$ " . number_format($profit, 2, '.', ''));
         $this->logEntry('LOSS', $this->currentSignalColor, $resultColor, $this->currentSignalPattern, $this->currentBetAmount, $roundProfit, $newMartingale);
+        Notify::notifyUser($this->userId, 'loss', "LOSS — {$this->displayColor($resultColor)} | Lucro: R$ " . number_format($profit, 2, '.', ''), 'Double', $this->platform);
         return ['exhausted' => true, 'newProfit' => $profit];
     }
 
@@ -696,20 +709,24 @@ final class DoubleEngine
         if (($settings['stopType'] ?? 'VALOR') === 'VALOR') {
             if ($variables['profit'] >= $stopGain && $stopGain > 0) {
                 $this->msg('🏆 *STOP WIN* atingido!');
+                Notify::notifyUser($this->userId, 'stopWin', 'Stop Win atingido — Lucro: R$ ' . number_format((float) $variables['profit'], 2, '.', ''), 'Double', $this->platform);
                 $stopped = true;
             } else {
                 $threshold = $this->peakProfit - $stopLoss;
                 if ($stopLoss > 0 && $variables['profit'] <= $threshold) {
                     $this->msg('🛑 *STOP LOSS* atingido!');
+                    Notify::notifyUser($this->userId, 'stopLoss', 'Stop Loss atingido — Lucro: R$ ' . number_format((float) $variables['profit'], 2, '.', ''), 'Double', $this->platform);
                     $stopped = true;
                 }
             }
         } else {
             if ($variables['countWin'] >= $stopGain) {
                 $this->msg('🏆 *STOP WIN* (quantidade)!');
+                Notify::notifyUser($this->userId, 'stopWin', 'Stop Win atingido (quantidade de vitórias)', 'Double', $this->platform);
                 $stopped = true;
             } elseif ($variables['countLoss'] >= $stopLoss) {
                 $this->msg('🛑 *STOP LOSS* (quantidade)!');
+                Notify::notifyUser($this->userId, 'stopLoss', 'Stop Loss atingido (quantidade de derrotas)', 'Double', $this->platform);
                 $stopped = true;
             }
         }
@@ -1131,11 +1148,19 @@ final class DoubleEngine
             }
             if (trim((string) $s['sequence']) === $minute) {
                 $this->lastMatchedPattern = 'HORÁRIO ' . $minute;
-                // força cor como colorBefore gale-like na próxima waiting via sfeReady
-                $this->sfeReady = true;
-                $this->sfeColor = strtoupper((string) $s['color']);
+                $color = strtoupper((string) $s['color']);
                 $this->sfePattern = $this->lastMatchedPattern;
-                $this->msg("⏰ Horário {$minute} — sinal *{$this->displayColor($this->sfeColor)}*");
+                if (!empty($settings['skipFirstEntry'])) {
+                    $this->sfeObserving = true;
+                    $this->sfeSimulateGales = false;
+                    $this->sfeColor = $color;
+                    $this->msg("⏰ Horário {$minute} — sinal *{$this->displayColor($color)}*\n⏳ Aguardando 1ª rodada...");
+                } else {
+                    // força cor como colorBefore gale-like na próxima waiting via sfeReady
+                    $this->sfeReady = true;
+                    $this->sfeColor = $color;
+                    $this->msg("⏰ Horário {$minute} — sinal *{$this->displayColor($color)}*");
+                }
                 break;
             }
         }
@@ -1169,7 +1194,8 @@ final class DoubleEngine
             $pattern,
             $bet,
             $profit,
-            $gale
+            $gale,
+            $this->isDemo ? 'DEMO' : 'REAL'
         );
     }
 }
